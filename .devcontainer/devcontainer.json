@@ -1,0 +1,9 @@
+{
+  "name": "Exasol Workshop",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "containerEnv": {
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI": "${localEnv:WORKSHOP_CRED_URL}",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN": "${localEnv:WORKSHOP_TOKEN}"
+  },
+  "postCreateCommand": "echo 'AWS credentials configured. Run: aws sts get-caller-identity to verify.'"
+}
