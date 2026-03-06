@@ -39,15 +39,14 @@ source .env
 ./encrypt-token.sh '<workshop-token-from-deploy>' "$SECRET"
 ```
 
-### 2. Set Codespaces secrets
+### 2. Update devcontainer.json
 
-```bash
-gh secret set WORKSHOP_CRED_URL --repo alexeygrigorev/exasol-workshop-starter --app codespaces
-# paste the Lambda Function URL
+Edit `.devcontainer/devcontainer.json` and replace the placeholders in `containerEnv`:
 
-gh secret set WORKSHOP_TOKEN_ENC --repo alexeygrigorev/exasol-workshop-starter --app codespaces
-# paste the encrypted token from step 1
-```
+- `WORKSHOP_CRED_URL` → the Lambda Function URL
+- `WORKSHOP_TOKEN_ENC` → the encrypted token from step 1
+
+Commit and push. The encrypted token is safe to commit — it's useless without the passphrase.
 
 ### 3. Share the passphrase
 
