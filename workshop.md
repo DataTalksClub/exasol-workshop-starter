@@ -896,20 +896,25 @@ Check the result:
 SELECT * FROM PRESCRIPTIONS_UK.PRESCRIPTION LIMIT 5;
 ```
 
-This is a first draft of the warehouse design. For now we keep every monthly snapshot of each dimension, which is the safest starting point. Once we load all 101 months, we can analyze how the data actually changes over time - do practices move? How often do chemical names change? That analysis will tell us the best way to model dimensions (e.g. slowly changing dimensions Type 1 vs Type 2, or just keeping the latest snapshot). Design the model based on the data, not assumptions.
+This is a first draft of the warehouse design. For now we keep every monthly snapshot of each dimension, which is the safest starting point.
+
+Once we load all 101 months, we can analyze how the data actually changes over time - do practices move? How often do chemical names change? That analysis will tell us the best way to model dimensions (e.g. slowly changing dimensions Type 1 vs Type 2, or just keeping the latest snapshot). 
+
 
 ## Automated data load
 
 We loaded one month manually to understand the process. Now let's automate it - first with Python scripts, then with Kestra as a workflow orchestrator.
 
-### Find available data URLs
+### Setup
 
 ```bash
 cd code
-uv add requests beautifulsoup4
+uv add requests beautifulsoup4 pyexasol
 ```
 
-Download the script and run it:
+### Find available data URLs
+
+Download the URL scraper and run it:
 
 ```bash
 wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/find_urls.py
@@ -918,64 +923,55 @@ uv run python find_urls.py
 
 This scrapes the [dataset page](https://www.data.gov.uk/dataset/176ae264-2484-4afe-a297-d51798eb8228/prescribing-by-gp-practice-presentation-level) and saves `data/prescription_urls.json` with ~101 months of data (2010-2018).
 
-### Download the ingestion script
+### Shared database module
+
+Download the shared module that handles DB connection, CSV format detection, and imports:
 
 ```bash
-uv add pyexasol
-wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/ingest.py
+wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/connection_info.py
+wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/db.py
 ```
 
-### Stage data
+This reuses `connection_info.py` to read deployment files and provides `connect()`, `detect_csv_format()`, `import_csv()`, and `get_url()` for the loader scripts.
 
-Load one month to test:
+### Load ADDR (practice addresses)
 
 ```bash
-uv run python ingest.py stage --period 201506
+wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/load_addr.py
+uv run python load_addr.py --period 201008
 ```
 
-Load a full year:
+This runs the same pipeline we did manually: STG_RAW → STG (trim) → STG_PROCESSED (address concat) → MERGE into PRACTICE.
+
+### Load CHEM (chemical substances)
 
 ```bash
-uv run python ingest.py stage --year 2015
+wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/load_chem.py
+uv run python load_chem.py --period 201008
 ```
 
-Load everything (~101 months):
+Same pattern: STG_RAW → STG (trim) → MERGE into CHEMICAL.
+
+### Load PDPI (prescriptions)
 
 ```bash
-uv run python ingest.py stage --all
+wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/load_pdpi.py
+uv run python load_pdpi.py --period 201008
 ```
 
-Already-loaded months are skipped automatically. Use `--force` to reload.
+This is the big one (~10M rows). Pipeline: STG_RAW → STG (trim) → DELETE + INSERT into PRESCRIPTION.
 
-### Create final tables
+### Load another month
 
-Once staging is done, create the final PRESCRIPTIONS, PRACTICE, and CHEMICAL tables:
+Each script takes `--period` so you can load any month:
 
 ```bash
-uv run python ingest.py finalize
+uv run python load_addr.py --period 201009
+uv run python load_chem.py --period 201009
+uv run python load_pdpi.py --period 201009
 ```
 
-### Clean up staging tables
-
-```bash
-uv run python ingest.py cleanup
-```
-
-### Check what's loaded
-
-```bash
-uv run python ingest.py summary
-```
-
-### Run the challenge queries
-
-```bash
-uv run python ingest.py query
-```
-
-This answers two questions about East Central London (EC postcodes):
-1. Top 3 most prescribed chemicals
-2. The year with the most prescriptions of the top chemical
+All scripts are idempotent - safe to re-run. Dimensions use MERGE (only overwrites with newer data), facts use DELETE + INSERT (replaces that month's data).
 
 
 ## Managing the cluster
