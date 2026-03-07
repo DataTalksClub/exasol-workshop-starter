@@ -14,15 +14,17 @@ The latest version is available at https://github.com/exasol-labs/exasol-vscode/
 If you're not using the Codespace (where `code/` is already set up), download the script:
 
 ```bash
-mkdir -p code && cd code
+mkdir -p code/utils && cd code
 uv init
-wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/connection_info.py
+touch utils/__init__.py
+PREFIX=https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference
+wget ${PREFIX}/utils/connection_info.py -O utils/connection_info.py
 ```
 
 Run it:
 
 ```bash
-uv run python connection_info.py
+uv run python utils/connection_info.py
 ```
 
 This prints everything you need: host, port, username, password, and the TLS certificate fingerprint.

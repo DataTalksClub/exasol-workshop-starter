@@ -10,13 +10,13 @@ Usage:
 import argparse
 import time
 
-from db import (
-    connect, detect_csv_format, import_csv, get_url,
-    STAGING_SCHEMA, WAREHOUSE_SCHEMA,
-)
+import pyexasol
+
+import utils.db as db
+from utils.detect_format import detect_csv_format
 
 
-def get_raw_schema(num_columns):
+def get_raw_schema(num_columns: int) -> str:
     base = """
     SHA VARCHAR(100),
     PCT VARCHAR(100),
@@ -34,20 +34,19 @@ def get_raw_schema(num_columns):
     return base
 
 
-def load(conn, period, url):
+def load_raw(conn: pyexasol.ExaConnection, period: str, url: str) -> int:
     fmt = detect_csv_format(url)
+    raw_table = f"STG_RAW_PDPI_{period}"
+    count = db.import_csv(conn, raw_table, url, get_raw_schema(fmt.num_columns), fmt)
+    return count
 
-    # Stage 1: load raw CSV
-    raw_table = "STG_RAW_PDPI_{}".format(period)
-    count = import_csv(conn, raw_table, url, get_raw_schema(fmt.num_columns), fmt)
-    if count == 0:
-        print("  No rows loaded")
-        return
 
-    # Stage 2: trim whitespace
-    stg_table = "STG_PDPI_{}".format(period)
-    conn.execute("DROP TABLE IF EXISTS {}".format(stg_table))
-    conn.execute("""CREATE TABLE {} (
+def trim(conn: pyexasol.ExaConnection, period: str) -> None:
+    raw_table = f"STG_RAW_PDPI_{period}"
+    stg_table = f"STG_PDPI_{period}"
+
+    conn.execute(f"DROP TABLE IF EXISTS {stg_table}")
+    conn.execute(f"""CREATE TABLE {stg_table} (
         SHA VARCHAR(10),
         PCT VARCHAR(10),
         PRACTICE VARCHAR(20),
@@ -58,10 +57,10 @@ def load(conn, period, url):
         ACT_COST DECIMAL(18,2),
         QUANTITY DECIMAL(18,0),
         PERIOD VARCHAR(6)
-    )""".format(stg_table))
+    )""")
 
-    conn.execute("""
-        INSERT INTO {}
+    conn.execute(f"""
+        INSERT INTO {stg_table}
         SELECT
             TRIM(SHA),
             TRIM(PCT),
@@ -72,20 +71,23 @@ def load(conn, period, url):
             NIC,
             ACT_COST,
             QUANTITY,
-            '{}'
-        FROM {}
-    """.format(stg_table, period, raw_table))
+            '{period}'
+        FROM {raw_table}
+    """)
 
-    conn.execute("DROP TABLE IF EXISTS {}".format(raw_table))
+    conn.execute(f"DROP TABLE IF EXISTS {raw_table}")
 
-    stg_count = conn.execute("SELECT COUNT(*) FROM {}".format(stg_table)).fetchone()[0]
-    print("  STG_PDPI: {:,} rows".format(stg_count))
+    stg_count = conn.execute(f"SELECT COUNT(*) FROM {stg_table}").fetchone()[0]
+    print(f"  STG_PDPI: {stg_count:,} rows")
 
-    # Stage 3: delete + insert into warehouse
-    conn.execute("DELETE FROM {}.PRESCRIPTION WHERE PERIOD = '{}'".format(WAREHOUSE_SCHEMA, period))
 
-    conn.execute("""
-        INSERT INTO {wh}.PRESCRIPTION
+def insert_into_warehouse(conn: pyexasol.ExaConnection, period: str) -> None:
+    stg_table = f"STG_PDPI_{period}"
+
+    conn.execute(f"DELETE FROM {db.WAREHOUSE_SCHEMA}.PRESCRIPTION WHERE PERIOD = '{period}'")
+
+    conn.execute(f"""
+        INSERT INTO {db.WAREHOUSE_SCHEMA}.PRESCRIPTION
         SELECT
             PRACTICE,
             BNF_CODE,
@@ -95,30 +97,43 @@ def load(conn, period, url):
             ACT_COST,
             QUANTITY,
             PERIOD
-        FROM {stg}.{table}
-    """.format(wh=WAREHOUSE_SCHEMA, stg=STAGING_SCHEMA, table=stg_table))
+        FROM {db.STAGING_SCHEMA}.{stg_table}
+    """)
 
     wh_count = conn.execute(
-        "SELECT TO_CHAR(COUNT(*)) FROM {}.PRESCRIPTION".format(WAREHOUSE_SCHEMA)
+        f"SELECT TO_CHAR(COUNT(*)) FROM {db.WAREHOUSE_SCHEMA}.PRESCRIPTION"
     ).fetchone()[0]
-    print("  PRESCRIPTION: {} rows in warehouse".format(wh_count))
+    print(f"  PRESCRIPTION: {wh_count} rows in warehouse")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Load PDPI (prescriptions)")
-    parser.add_argument("--period", required=True, help="Period to load (e.g. 201008)")
-    args = parser.parse_args()
-
-    url = get_url(args.period, "pdpi")
-    if not url:
-        print("No PDPI URL for period {}".format(args.period))
+def load(conn: pyexasol.ExaConnection, period: str, url: str) -> None:
+    count = load_raw(conn, period, url)
+    if count == 0:
+        print("  No rows loaded")
         return
 
-    conn = connect()
+    trim(conn, period)
+    insert_into_warehouse(conn, period)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Load PDPI (prescriptions)")
+    parser.add_argument("--period", required=True, help="Period to load (e.g. 201008)")
+    parser.add_argument("--step", choices=["load_raw", "trim", "insert"],
+                        help="Run a single step")
+    args = parser.parse_args()
+
+    url = db.get_url(args.period, "pdpi")
+    if not url:
+        print(f"No PDPI URL for period {args.period}")
+        return
+
+    conn = db.connect()
+    db.ensure_schemas(conn)
 
     # Ensure warehouse table exists
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS {}.PRESCRIPTION (
+    conn.execute(f"""
+        CREATE TABLE IF NOT EXISTS {db.WAREHOUSE_SCHEMA}.PRESCRIPTION (
             PRACTICE_CODE VARCHAR(20),
             BNF_CODE VARCHAR(15),
             DRUG_NAME VARCHAR(200),
@@ -128,12 +143,21 @@ def main():
             QUANTITY DECIMAL(18,0),
             PERIOD VARCHAR(6)
         )
-    """.format(WAREHOUSE_SCHEMA))
+    """)
 
-    print("[{}] Loading PDPI...".format(args.period))
+    print(f"[{args.period}] Loading PDPI...")
     start = time.time()
-    load(conn, args.period, url)
-    print("[{}] Done in {:.1f}s".format(args.period, time.time() - start))
+
+    if not args.step:
+        load(conn, args.period, url)
+    elif args.step == "load_raw":
+        load_raw(conn, args.period, url)
+    elif args.step == "trim":
+        trim(conn, args.period)
+    elif args.step == "insert":
+        insert_into_warehouse(conn, args.period)
+
+    print(f"[{args.period}] Done in {time.time() - start:.1f}s")
 
     conn.close()
 

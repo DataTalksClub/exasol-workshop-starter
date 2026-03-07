@@ -22,20 +22,20 @@ class CsvFormat:
     skip: int
 
 
-def download_sample(url, sample_size=4096):
-    resp = requests.get(url, headers={"Range": "bytes=0-{}".format(sample_size)}, timeout=30)
+def download_sample(url: str, sample_size: int = 4096) -> bytes:
+    resp = requests.get(url, headers={"Range": f"bytes=0-{sample_size}"}, timeout=30)
     resp.raise_for_status()
     return resp.content
 
 
-def detect_row_separator(sample):
+def detect_row_separator(sample: bytes) -> str:
     if b"\r\n" in sample[:100]:
         return "CRLF"
     else:
         return "LF"
 
 
-def count_columns(lines):
+def count_columns(lines: list[bytes]) -> int:
     first_line = lines[0].decode("utf-8", errors="ignore")
     num_columns = len(first_line.split(","))
 
@@ -48,7 +48,7 @@ def count_columns(lines):
     return num_columns
 
 
-def check_has_header(line):
+def check_has_header(line: str) -> bool:
     upper_line = line.upper()
     for name in HEADER_NAMES:
         if name in upper_line:
@@ -56,7 +56,7 @@ def check_has_header(line):
     return False
 
 
-def detect_csv_format(url, sample_size=4096):
+def detect_csv_format(url: str, sample_size: int = 4096) -> CsvFormat:
     sample = download_sample(url, sample_size)
 
     lines = sample.split(b"\n")

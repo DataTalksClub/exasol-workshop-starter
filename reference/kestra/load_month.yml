@@ -1,0 +1,103 @@
+id: load_month
+namespace: prescriptions
+
+description: |
+  Load one month of NHS prescription data into Exasol.
+  Each stage (ingest raw, trim, transform, warehouse load) is a separate step.
+
+inputs:
+  - id: period
+    type: STRING
+    description: Period to load (e.g. 201008)
+
+tasks:
+  - id: install_deps
+    type: io.kestra.plugin.scripts.shell.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv sync
+
+  - id: find_urls
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python find_urls.py
+
+  - id: addr_load_raw
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_addr.py --period {{inputs.period}} --step load_raw
+
+  - id: addr_trim
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_addr.py --period {{inputs.period}} --step trim
+
+  - id: addr_combine_address
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_addr.py --period {{inputs.period}} --step combine_address
+
+  - id: addr_merge
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_addr.py --period {{inputs.period}} --step merge
+
+  - id: chem_load_raw
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_chem.py --period {{inputs.period}} --step load_raw
+
+  - id: chem_trim
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_chem.py --period {{inputs.period}} --step trim
+
+  - id: chem_merge
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_chem.py --period {{inputs.period}} --step merge
+
+  - id: pdpi_load_raw
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_pdpi.py --period {{inputs.period}} --step load_raw
+
+  - id: pdpi_trim
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_pdpi.py --period {{inputs.period}} --step trim
+
+  - id: pdpi_insert
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_pdpi.py --period {{inputs.period}} --step insert
+
+  - id: check
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python check.py

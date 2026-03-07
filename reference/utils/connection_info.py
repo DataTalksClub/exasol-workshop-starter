@@ -13,27 +13,27 @@ import hashlib
 from pathlib import Path
 
 
-def find_deployment_files(deployment_dir=None):
+def find_deployment_files(deployment_dir: Path | None = None) -> tuple[Path, Path]:
     if deployment_dir is None:
-        deployment_dir = Path(__file__).parent.parent / "deployment"
+        deployment_dir = Path(__file__).parent.parent.parent / "deployment"
     else:
         deployment_dir = Path(deployment_dir)
 
     dep_files = list(deployment_dir.glob("deployment-exasol-*.json"))
     if not dep_files:
-        raise FileNotFoundError("No deployment files found in {}".format(deployment_dir))
+        raise FileNotFoundError(f"No deployment files found in {deployment_dir}")
 
     dep_file = dep_files[0]
     dep_id = dep_file.stem.replace("deployment-", "")
-    sec_file = deployment_dir / "secrets-{}.json".format(dep_id)
+    sec_file = deployment_dir / f"secrets-{dep_id}.json"
 
     if not sec_file.exists():
-        raise FileNotFoundError("Secrets file not found: {}".format(sec_file))
+        raise FileNotFoundError(f"Secrets file not found: {sec_file}")
 
     return dep_file, sec_file
 
 
-def get_config(deployment_dir=None):
+def get_config(deployment_dir: Path | None = None) -> dict:
     dep_file, sec_file = find_deployment_files(deployment_dir)
 
     with open(dep_file) as f:
@@ -52,7 +52,7 @@ def get_config(deployment_dir=None):
     }
 
 
-def get_fingerprint(host, port=8563):
+def get_fingerprint(host: str, port: int = 8563) -> str:
     context = ssl.create_default_context()
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
@@ -63,7 +63,7 @@ def get_fingerprint(host, port=8563):
             return hashlib.sha256(cert_der).hexdigest().upper()
 
 
-def main():
+def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="Print Exasol connection details")
@@ -78,18 +78,18 @@ def main():
 
     print("Exasol Connection Details")
     print("=" * 50)
-    print("Host:        {}".format(config["host"]))
-    print("Port:        {}".format(config["port"]))
-    print("Username:    {}".format(config["user"]))
-    print("Password:    {}".format(config["password"]))
+    print(f"Host:        {config['host']}")
+    print(f"Port:        {config['port']}")
+    print(f"Username:    {config['user']}")
+    print(f"Password:    {config['password']}")
 
     print()
     print("Fetching TLS certificate fingerprint...")
     try:
         fingerprint = get_fingerprint(config["host"], config["port"])
-        print("Fingerprint: {}".format(fingerprint))
+        print(f"Fingerprint: {fingerprint}")
     except Exception as e:
-        print("Could not fetch fingerprint: {}".format(e))
+        print(f"Could not fetch fingerprint: {e}")
         fingerprint = None
 
 

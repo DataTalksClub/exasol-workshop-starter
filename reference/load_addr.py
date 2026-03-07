@@ -10,13 +10,13 @@ Usage:
 import argparse
 import time
 
-from db import (
-    connect, detect_csv_format, import_csv, get_url,
-    STAGING_SCHEMA, WAREHOUSE_SCHEMA,
-)
+import pyexasol
+
+import utils.db as db
+from utils.detect_format import detect_csv_format
 
 
-def get_raw_schema(num_columns):
+def get_raw_schema(num_columns: int) -> str:
     base = """
     PERIOD VARCHAR(100),
     PRACTICE_CODE VARCHAR(100),
@@ -32,20 +32,20 @@ def get_raw_schema(num_columns):
     return base
 
 
-def load(conn, period, url):
+def load_raw(conn: pyexasol.ExaConnection, period: str, url: str) -> int:
     fmt = detect_csv_format(url)
+    raw_table = f"STG_RAW_ADDR_{period}"
+    schema = get_raw_schema(fmt.num_columns)
+    count = db.import_csv(conn, raw_table, url, schema, fmt)
+    return count
 
-    # Stage 1: load raw CSV
-    raw_table = "STG_RAW_ADDR_{}".format(period)
-    count = import_csv(conn, raw_table, url, get_raw_schema(fmt.num_columns), fmt)
-    if count == 0:
-        print("  No rows loaded")
-        return
 
-    # Stage 2: trim whitespace
-    stg_table = "STG_ADDR_{}".format(period)
-    conn.execute("DROP TABLE IF EXISTS {}".format(stg_table))
-    conn.execute("""CREATE TABLE {} (
+def trim(conn: pyexasol.ExaConnection, period: str) -> None:
+    raw_table = f"STG_RAW_ADDR_{period}"
+    stg_table = f"STG_ADDR_{period}"
+
+    conn.execute(f"DROP TABLE IF EXISTS {stg_table}")
+    conn.execute(f"""CREATE TABLE {stg_table} (
         PERIOD VARCHAR(6),
         PRACTICE_CODE VARCHAR(20),
         PRACTICE_NAME VARCHAR(200),
@@ -54,12 +54,12 @@ def load(conn, period, url):
         ADDRESS_3 VARCHAR(200),
         COUNTY VARCHAR(200),
         POSTCODE VARCHAR(20)
-    )""".format(stg_table))
+    )""")
 
-    conn.execute("""
-        INSERT INTO {}
+    conn.execute(f"""
+        INSERT INTO {stg_table}
         SELECT
-            '{}',
+            '{period}',
             TRIM(PRACTICE_CODE),
             TRIM(PRACTICE_NAME),
             TRIM(ADDRESS_1),
@@ -67,25 +67,28 @@ def load(conn, period, url):
             TRIM(ADDRESS_3),
             TRIM(COUNTY),
             TRIM(POSTCODE)
-        FROM {}
-    """.format(stg_table, period, raw_table))
+        FROM {raw_table}
+    """)
 
-    conn.execute("DROP TABLE IF EXISTS {}".format(raw_table))
+    conn.execute(f"DROP TABLE IF EXISTS {raw_table}")
 
-    # Stage 3: combine address fields
-    processed_table = "STG_PROCESSED_ADDR_{}".format(period)
-    conn.execute("DROP TABLE IF EXISTS {}".format(processed_table))
-    conn.execute("""CREATE TABLE {} (
+
+def combine_address(conn: pyexasol.ExaConnection, period: str) -> None:
+    stg_table = f"STG_ADDR_{period}"
+    processed_table = f"STG_PROCESSED_ADDR_{period}"
+
+    conn.execute(f"DROP TABLE IF EXISTS {processed_table}")
+    conn.execute(f"""CREATE TABLE {processed_table} (
         PERIOD VARCHAR(6),
         PRACTICE_CODE VARCHAR(20),
         PRACTICE_NAME VARCHAR(200),
         ADDRESS VARCHAR(600),
         COUNTY VARCHAR(200),
         POSTCODE VARCHAR(20)
-    )""".format(processed_table))
+    )""")
 
-    conn.execute("""
-        INSERT INTO {}
+    conn.execute(f"""
+        INSERT INTO {processed_table}
         SELECT
             PERIOD,
             PRACTICE_CODE,
@@ -98,48 +101,65 @@ def load(conn, period, url):
             )),
             COUNTY,
             POSTCODE
-        FROM {}
-    """.format(processed_table, stg_table))
+        FROM {stg_table}
+    """)
 
-    proc_count = conn.execute("SELECT COUNT(*) FROM {}".format(processed_table)).fetchone()[0]
-    print("  STG_PROCESSED_ADDR: {:,} rows".format(proc_count))
+    proc_count = conn.execute(f"SELECT COUNT(*) FROM {processed_table}").fetchone()[0]
+    print(f"  STG_PROCESSED_ADDR: {proc_count:,} rows")
 
-    # Stage 4: merge into warehouse
-    conn.execute("""
-        MERGE INTO {wh}.PRACTICE tgt
-        USING {stg}.{processed} src
+
+def merge_into_warehouse(conn: pyexasol.ExaConnection, period: str) -> None:
+    processed_table = f"STG_PROCESSED_ADDR_{period}"
+
+    conn.execute(f"""
+        MERGE INTO {db.WAREHOUSE_SCHEMA}.PRACTICE tgt
+        USING {db.STAGING_SCHEMA}.{processed_table} src
         ON tgt.PRACTICE_CODE = src.PRACTICE_CODE
         WHEN MATCHED THEN UPDATE SET
-            tgt.PRACTICE_NAME = CASE WHEN src.PERIOD >= tgt.PERIOD THEN src.PRACTICE_NAME ELSE tgt.PRACTICE_NAME END,
-            tgt.ADDRESS = CASE WHEN src.PERIOD >= tgt.PERIOD THEN src.ADDRESS ELSE tgt.ADDRESS END,
-            tgt.COUNTY = CASE WHEN src.PERIOD >= tgt.PERIOD THEN src.COUNTY ELSE tgt.COUNTY END,
-            tgt.POSTCODE = CASE WHEN src.PERIOD >= tgt.PERIOD THEN src.POSTCODE ELSE tgt.POSTCODE END,
-            tgt.PERIOD = CASE WHEN src.PERIOD >= tgt.PERIOD THEN src.PERIOD ELSE tgt.PERIOD END
+            tgt.PRACTICE_NAME = {db.newer('PRACTICE_NAME')},
+            tgt.ADDRESS = {db.newer('ADDRESS')},
+            tgt.COUNTY = {db.newer('COUNTY')},
+            tgt.POSTCODE = {db.newer('POSTCODE')},
+            tgt.PERIOD = {db.newer('PERIOD')}
         WHEN NOT MATCHED THEN INSERT VALUES (
             src.PRACTICE_CODE, src.PRACTICE_NAME, src.ADDRESS,
             src.COUNTY, src.POSTCODE, src.PERIOD
         )
-    """.format(wh=WAREHOUSE_SCHEMA, stg=STAGING_SCHEMA, processed=processed_table))
+    """)
 
-    wh_count = conn.execute("SELECT COUNT(*) FROM {}.PRACTICE".format(WAREHOUSE_SCHEMA)).fetchone()[0]
-    print("  PRACTICE: {:,} rows in warehouse".format(wh_count))
+    wh_count = conn.execute(f"SELECT COUNT(*) FROM {db.WAREHOUSE_SCHEMA}.PRACTICE").fetchone()[0]
+    print(f"  PRACTICE: {wh_count:,} rows in warehouse")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Load ADDR (practice addresses)")
-    parser.add_argument("--period", required=True, help="Period to load (e.g. 201008)")
-    args = parser.parse_args()
-
-    url = get_url(args.period, "addr")
-    if not url:
-        print("No ADDR URL for period {}".format(args.period))
+def load(conn: pyexasol.ExaConnection, period: str, url: str) -> None:
+    count = load_raw(conn, period, url)
+    if count == 0:
+        print("  No rows loaded")
         return
 
-    conn = connect()
+    trim(conn, period)
+    combine_address(conn, period)
+    merge_into_warehouse(conn, period)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Load ADDR (practice addresses)")
+    parser.add_argument("--period", required=True, help="Period to load (e.g. 201008)")
+    parser.add_argument("--step", choices=["load_raw", "trim", "combine_address", "merge"],
+                        help="Run a single step")
+    args = parser.parse_args()
+
+    url = db.get_url(args.period, "addr")
+    if not url:
+        print(f"No ADDR URL for period {args.period}")
+        return
+
+    conn = db.connect()
+    db.ensure_schemas(conn)
 
     # Ensure warehouse table exists
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS {}.PRACTICE (
+    conn.execute(f"""
+        CREATE TABLE IF NOT EXISTS {db.WAREHOUSE_SCHEMA}.PRACTICE (
             PRACTICE_CODE VARCHAR(20),
             PRACTICE_NAME VARCHAR(200),
             ADDRESS VARCHAR(600),
@@ -147,12 +167,23 @@ def main():
             POSTCODE VARCHAR(20),
             PERIOD VARCHAR(6)
         )
-    """.format(WAREHOUSE_SCHEMA))
+    """)
 
-    print("[{}] Loading ADDR...".format(args.period))
+    print(f"[{args.period}] Loading ADDR...")
     start = time.time()
-    load(conn, args.period, url)
-    print("[{}] Done in {:.1f}s".format(args.period, time.time() - start))
+
+    if not args.step:
+        load(conn, args.period, url)
+    elif args.step == "load_raw":
+        load_raw(conn, args.period, url)
+    elif args.step == "trim":
+        trim(conn, args.period)
+    elif args.step == "combine_address":
+        combine_address(conn, args.period)
+    elif args.step == "merge":
+        merge_into_warehouse(conn, args.period)
+
+    print(f"[{args.period}] Done in {time.time() - start:.1f}s")
 
     conn.close()
 

@@ -914,33 +914,41 @@ uv add requests beautifulsoup4 pyexasol
 
 ### Find available data URLs
 
+Set the base URL for downloading reference scripts:
+
+```bash
+PREFIX=https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference
+```
+
 Download the URL scraper and run it:
 
 ```bash
-wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/find_urls.py
+wget ${PREFIX}/find_urls.py
 uv run python find_urls.py
 ```
 
 This scrapes the [dataset page](https://www.data.gov.uk/dataset/176ae264-2484-4afe-a297-d51798eb8228/prescribing-by-gp-practice-presentation-level) and saves `data/prescription_urls.json` with ~101 months of data (2010-2018).
 
-### Shared database module
+### Shared utilities module
 
-Download the shared module that handles DB connection, CSV format detection, and imports:
+Create the `utils/` package and download the shared modules:
 
 ```bash
-wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/connection_info.py
-wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/detect_format.py
-wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/db.py
+mkdir -p utils
+touch utils/__init__.py
+wget ${PREFIX}/utils/connection_info.py -O utils/connection_info.py
+wget ${PREFIX}/utils/detect_format.py -O utils/detect_format.py
+wget ${PREFIX}/utils/db.py -O utils/db.py
 ```
 
-- `connection_info.py` reads the deployment files to get host, port, and credentials
-- `detect_format.py` detects CSV format (row separator, column count, header) by downloading a small sample
-- `db.py` ties them together and provides `connect()`, `import_csv()`, and `get_url()` for the loader scripts
+- [`utils/connection_info.py`](reference/utils/connection_info.py) reads the deployment files to get host, port, and credentials
+- [`utils/detect_format.py`](reference/utils/detect_format.py) detects CSV format (row separator, column count, header) by downloading a small sample
+- [`utils/db.py`](reference/utils/db.py) ties them together and provides `connect()`, `ensure_schemas()`, `import_csv()`, and `get_url()` for the loader scripts
 
 ### Load ADDR (practice addresses)
 
 ```bash
-wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/load_addr.py
+wget ${PREFIX}/load_addr.py
 uv run python load_addr.py --period 201008
 ```
 
@@ -949,7 +957,7 @@ This runs the same pipeline we did manually: STG_RAW → STG (trim) → STG_PROC
 ### Load CHEM (chemical substances)
 
 ```bash
-wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/load_chem.py
+wget ${PREFIX}/load_chem.py
 uv run python load_chem.py --period 201008
 ```
 
@@ -958,11 +966,41 @@ Same pattern: STG_RAW → STG (trim) → MERGE into CHEMICAL.
 ### Load PDPI (prescriptions)
 
 ```bash
-wget https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference/load_pdpi.py
+wget ${PREFIX}/load_pdpi.py
 uv run python load_pdpi.py --period 201008
 ```
 
 This is the big one (~10M rows). Pipeline: STG_RAW → STG (trim) → DELETE + INSERT into PRESCRIPTION.
+
+### Verify the data
+
+Download and run the analytics check script:
+
+```bash
+wget ${PREFIX}/check.py
+uv run python check.py
+```
+
+This queries the warehouse to verify everything loaded correctly:
+
+- Row counts for all three tables
+- Top 10 drugs by total cost (joins PRESCRIPTION with CHEMICAL)
+- Top 10 practices by prescription volume (joins PRESCRIPTION with PRACTICE)
+
+You should see output like:
+
+```
+=== Row counts ===
+  PRACTICE: 10,263 rows
+  CHEMICAL: 3,289 rows
+  PRESCRIPTION: 9,799,052 rows
+
+=== Top 10 drugs by total cost ===
+  BNF_CODE         CHEMICAL                                      ITEMS         COST
+  ---------------- ---------------------------------------- ---------- ------------
+  0212000B0AAACAC  Atorvastatin                                314,765 8,754,221.07
+  ...
+```
 
 ### Load another month
 
@@ -975,6 +1013,293 @@ uv run python load_pdpi.py --period 201009
 ```
 
 All scripts are idempotent - safe to re-run. Dimensions use MERGE (only overwrites with newer data), facts use DELETE + INSERT (replaces that month's data).
+
+Run `check.py` again to see the updated totals after loading more months.
+
+
+## Orchestrating with Kestra
+
+We have Python scripts that load one month at a time, but there are 101 months to load. Running them manually one by one isn't practical. We need a workflow orchestrator - a tool that runs tasks in the right order, handles failures, and lets us monitor progress.
+
+[Kestra](https://kestra.io/) is an open-source orchestration platform. Workflows are defined in YAML, executed via a web UI, and each run is tracked with logs and status. To learn more about Kestra, check out the [workflow orchestration module](https://github.com/DataTalksClub/data-engineering-zoomcamp/tree/main/02-workflow-orchestration) of the Data Engineering Zoomcamp.
+
+### Start Kestra
+
+The docker-compose file mounts your `code/` directory into the Kestra container at `/app/code`, so the scripts and deployment files are available without downloading. Download the docker-compose file and start Kestra:
+
+```bash
+cd code
+wget ${PREFIX}/kestra/docker-compose.yml -O kestra/docker-compose.yml
+cd kestra
+docker compose up -d
+```
+
+Wait a minute for it to start, then open the Kestra UI at http://localhost:8080.
+
+### Load a single month
+
+In the Kestra UI, go to Flows, click Create. Paste the following flow definition.
+
+Each loader script supports a `--step` argument that runs a single stage of the pipeline. This lets us make every stage (ingest raw CSV, trim whitespace, transform, warehouse load) a separate step in the Kestra flow - visible in the UI with its own logs and status.
+
+The flow takes a `period` input (e.g. `201008`) and runs these steps:
+
+1. `uv sync` - install dependencies
+2. `find_urls.py` - scrape CSV URLs
+3. ADDR pipeline: load_raw → trim → combine_address → merge into PRACTICE
+4. CHEM pipeline: load_raw → trim → merge into CHEMICAL
+5. PDPI pipeline: load_raw → trim → insert into PRESCRIPTION
+6. `check.py` - verify the result
+
+```yaml
+id: load_month
+namespace: prescriptions
+
+description: |
+  Load one month of NHS prescription data into Exasol.
+  Each stage (ingest raw, trim, transform, warehouse load) is a separate step.
+
+inputs:
+  - id: period
+    type: STRING
+    description: Period to load (e.g. 201008)
+
+tasks:
+  - id: install_deps
+    type: io.kestra.plugin.scripts.shell.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv sync
+
+  - id: find_urls
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python find_urls.py
+
+  - id: addr_load_raw
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_addr.py --period {{inputs.period}} --step load_raw
+
+  - id: addr_trim
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_addr.py --period {{inputs.period}} --step trim
+
+  - id: addr_combine_address
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_addr.py --period {{inputs.period}} --step combine_address
+
+  - id: addr_merge
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_addr.py --period {{inputs.period}} --step merge
+
+  - id: chem_load_raw
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_chem.py --period {{inputs.period}} --step load_raw
+
+  - id: chem_trim
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_chem.py --period {{inputs.period}} --step trim
+
+  - id: chem_merge
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_chem.py --period {{inputs.period}} --step merge
+
+  - id: pdpi_load_raw
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_pdpi.py --period {{inputs.period}} --step load_raw
+
+  - id: pdpi_trim
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_pdpi.py --period {{inputs.period}} --step trim
+
+  - id: pdpi_insert
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python load_pdpi.py --period {{inputs.period}} --step insert
+
+  - id: check
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python check.py
+```
+
+Click Save, then Execute. Enter `201008` as the period and click Execute. You can watch each step's progress and logs in the UI.
+
+The flow graph shows every stage as a separate box:
+
+```
+install_deps → find_urls → addr_load_raw → addr_trim → addr_combine_address → addr_merge
+                         → chem_load_raw → chem_trim → chem_merge
+                         → pdpi_load_raw → pdpi_trim → pdpi_insert
+                         → check
+```
+
+We use `taskRunner: Process` so the scripts run directly on the host - this gives them access to the `deployment/` directory with the Exasol connection details. The `code/` directory is mounted into the container via docker-compose.
+
+### Load all months
+
+To load all 101 months, create a second flow. Go to Flows, click Create, and paste:
+
+```yaml
+id: load_all
+namespace: prescriptions
+
+description: |
+  Load all 101 months of NHS prescription data into Exasol.
+  Iterates over all periods. Each stage is a separate step.
+
+tasks:
+  - id: install_deps
+    type: io.kestra.plugin.scripts.shell.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv sync
+
+  - id: find_urls
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python find_urls.py
+
+  - id: get_periods
+    type: io.kestra.plugin.scripts.python.Script
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    script: |
+      import json
+      from kestra import Kestra
+      data = json.load(open('/app/code/data/prescription_urls.json'))
+      periods = [m['period'] for m in data['months']]
+      Kestra.outputs({'periods': periods})
+
+  - id: load_each_month
+    type: io.kestra.plugin.core.flow.ForEach
+    values: "{{outputs.get_periods.vars.periods}}"
+    tasks:
+      - id: addr_load_raw
+        type: io.kestra.plugin.scripts.python.Commands
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+        commands:
+          - cd /app/code && uv run python load_addr.py --period {{taskrun.value}} --step load_raw
+
+      - id: addr_trim
+        type: io.kestra.plugin.scripts.python.Commands
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+        commands:
+          - cd /app/code && uv run python load_addr.py --period {{taskrun.value}} --step trim
+
+      - id: addr_combine_address
+        type: io.kestra.plugin.scripts.python.Commands
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+        commands:
+          - cd /app/code && uv run python load_addr.py --period {{taskrun.value}} --step combine_address
+
+      - id: addr_merge
+        type: io.kestra.plugin.scripts.python.Commands
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+        commands:
+          - cd /app/code && uv run python load_addr.py --period {{taskrun.value}} --step merge
+
+      - id: chem_load_raw
+        type: io.kestra.plugin.scripts.python.Commands
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+        commands:
+          - cd /app/code && uv run python load_chem.py --period {{taskrun.value}} --step load_raw
+
+      - id: chem_trim
+        type: io.kestra.plugin.scripts.python.Commands
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+        commands:
+          - cd /app/code && uv run python load_chem.py --period {{taskrun.value}} --step trim
+
+      - id: chem_merge
+        type: io.kestra.plugin.scripts.python.Commands
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+        commands:
+          - cd /app/code && uv run python load_chem.py --period {{taskrun.value}} --step merge
+
+      - id: pdpi_load_raw
+        type: io.kestra.plugin.scripts.python.Commands
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+        commands:
+          - cd /app/code && uv run python load_pdpi.py --period {{taskrun.value}} --step load_raw
+
+      - id: pdpi_trim
+        type: io.kestra.plugin.scripts.python.Commands
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+        commands:
+          - cd /app/code && uv run python load_pdpi.py --period {{taskrun.value}} --step trim
+
+      - id: pdpi_insert
+        type: io.kestra.plugin.scripts.python.Commands
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+        commands:
+          - cd /app/code && uv run python load_pdpi.py --period {{taskrun.value}} --step insert
+
+  - id: check
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /app/code && uv run python check.py
+```
+
+This flow:
+
+1. Installs dependencies and finds all available URLs
+2. Uses the Kestra Python library to extract the list of 101 periods
+3. ForEach iterates over all periods - for each one, runs every stage as a separate step
+4. After all months are loaded, runs `check.py` to verify the final state
+
+Click Execute to start. Loading all 101 months takes a while (~30 minutes depending on network and instance size), but you can monitor progress in the UI - each month shows as a separate iteration in the ForEach task, and each stage within that iteration is a separate step with its own logs.
+
+Since all our scripts are idempotent, if the flow fails partway through (e.g. network timeout), you can re-run it safely. Already-loaded months will be overwritten with identical data.
 
 
 ## Managing the cluster
