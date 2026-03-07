@@ -39,6 +39,7 @@ SCHEMAS = {
     "PRESCRIPTION": pa.schema([
         ("PRACTICE_CODE", pa.string()),
         ("BNF_CODE", pa.string()),
+        ("CHEMICAL_CODE", pa.string()),
         ("DRUG_NAME", pa.string()),
         ("ITEMS", pa.int64()),
         ("NET_COST", pa.decimal128(18, 2)),

@@ -833,11 +833,13 @@ The PRESCRIPTION fact table is built from the PDPI staging data. We make these c
 - Rename PRACTICE to PRACTICE_CODE to match the dimension table and make the join obvious
 - Rename BNF_NAME to DRUG_NAME - "BNF" is NHS jargon (British National Formulary), "drug" is what analysts understand
 - Rename NIC (Net Ingredient Cost) and ACT_COST (Actual Cost) to NET_COST and ACTUAL_COST for clarity
+- Add CHEMICAL_CODE - extracted from the first 9 characters of BNF_CODE. A BNF code like `0212000B0AAACAC` is hierarchical: the first 9 characters (`0212000B0`) identify the chemical substance (e.g. "Atorvastatin"), while the rest identifies the specific product and formulation (e.g. "20mg tablets"). We store CHEMICAL_CODE separately so analysts can join directly to the CHEMICAL dimension table without extracting it every time
 
 ```sql
 CREATE TABLE IF NOT EXISTS PRESCRIPTIONS_UK.PRESCRIPTION (
     PRACTICE_CODE VARCHAR(20),
     BNF_CODE VARCHAR(15),
+    CHEMICAL_CODE VARCHAR(9),
     DRUG_NAME VARCHAR(200),
     ITEMS DECIMAL(18,0),
     NET_COST DECIMAL(18,2),
@@ -850,7 +852,7 @@ CREATE TABLE IF NOT EXISTS PRESCRIPTIONS_UK.PRESCRIPTION (
 Single line:
 
 ```sql
-CREATE TABLE IF NOT EXISTS PRESCRIPTIONS_UK.PRESCRIPTION (PRACTICE_CODE VARCHAR(20), BNF_CODE VARCHAR(15), DRUG_NAME VARCHAR(200), ITEMS DECIMAL(18,0), NET_COST DECIMAL(18,2), ACTUAL_COST DECIMAL(18,2), QUANTITY DECIMAL(18,0), PERIOD VARCHAR(6));
+CREATE TABLE IF NOT EXISTS PRESCRIPTIONS_UK.PRESCRIPTION (PRACTICE_CODE VARCHAR(20), BNF_CODE VARCHAR(15), CHEMICAL_CODE VARCHAR(9), DRUG_NAME VARCHAR(200), ITEMS DECIMAL(18,0), NET_COST DECIMAL(18,2), ACTUAL_COST DECIMAL(18,2), QUANTITY DECIMAL(18,0), PERIOD VARCHAR(6));
 ```
 
 Delete any existing rows for this period (no-op on first run, prevents duplicates on re-run):
@@ -866,6 +868,7 @@ INSERT INTO PRESCRIPTIONS_UK.PRESCRIPTION
 SELECT
     PRACTICE,
     BNF_CODE,
+    SUBSTR(BNF_CODE, 1, 9),
     BNF_NAME,
     ITEMS,
     NIC,
@@ -878,7 +881,7 @@ FROM PRESCRIPTIONS_UK_STAGING.STG_PDPI_201008;
 Single line:
 
 ```sql
-INSERT INTO PRESCRIPTIONS_UK.PRESCRIPTION SELECT PRACTICE, BNF_CODE, BNF_NAME, ITEMS, NIC, ACT_COST, QUANTITY, PERIOD FROM PRESCRIPTIONS_UK_STAGING.STG_PDPI_201008;
+INSERT INTO PRESCRIPTIONS_UK.PRESCRIPTION SELECT PRACTICE, BNF_CODE, SUBSTR(BNF_CODE, 1, 9), BNF_NAME, ITEMS, NIC, ACT_COST, QUANTITY, PERIOD FROM PRESCRIPTIONS_UK_STAGING.STG_PDPI_201008;
 ```
 
 Check the result:
@@ -1144,16 +1147,7 @@ Why `concurrencyLimit: 4`? The Exasol Community Edition allows only 5 parallel c
 
 Some months may fail due to unavailable source URLs (a few older months link to servers that are no longer online). The flow continues past failures — you'll see failed months marked in the UI, but the rest will keep loading. Since all our scripts are idempotent, you can re-run the flow safely. Already-loaded months will be overwritten with identical data.
 
-### Export to Parquet
 
-Once the data is loaded, you can export the warehouse tables to Parquet files for use outside Exasol (e.g. for analysis with DuckDB, Pandas, or Spark):
-
-```bash
-cd code
-uv run python export_parquet.py
-```
-
-This exports the three warehouse tables (PRACTICE, CHEMICAL, PRESCRIPTION) to `data/parquet/`. The PRESCRIPTION table has ~1 billion rows and is exported in chunks of 25 million rows. The small tables (PRACTICE, CHEMICAL) export instantly.
 
 
 ## Managing the cluster

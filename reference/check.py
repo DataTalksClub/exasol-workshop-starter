@@ -22,16 +22,15 @@ def main() -> None:
     print()
     print("=== Top 10 drugs by total cost ===")
     rows = conn.execute(f"""
-        SELECT
-            p.BNF_CODE,
-            c.CHEMICAL_NAME,
-            SUM(p.ITEMS) AS TOTAL_ITEMS,
-            SUM(p.ACTUAL_COST) AS TOTAL_COST
-        FROM {db.WAREHOUSE_SCHEMA}.PRESCRIPTION p
+        SELECT sub.BNF_CODE, c.CHEMICAL_NAME, sub.TOTAL_ITEMS, sub.TOTAL_COST
+        FROM (
+            SELECT BNF_CODE, CHEMICAL_CODE, SUM(ITEMS) AS TOTAL_ITEMS, SUM(ACTUAL_COST) AS TOTAL_COST
+            FROM {db.WAREHOUSE_SCHEMA}.PRESCRIPTION
+            GROUP BY BNF_CODE, CHEMICAL_CODE
+        ) sub
         LEFT JOIN {db.WAREHOUSE_SCHEMA}.CHEMICAL c
-            ON SUBSTR(p.BNF_CODE, 1, 9) = c.CHEMICAL_CODE
-        GROUP BY p.BNF_CODE, c.CHEMICAL_NAME
-        ORDER BY TOTAL_COST DESC
+            ON sub.CHEMICAL_CODE = c.CHEMICAL_CODE
+        ORDER BY sub.TOTAL_COST DESC
         LIMIT 10
     """).fetchall()
 
@@ -43,16 +42,15 @@ def main() -> None:
     print()
     print("=== Top 10 practices by prescription volume ===")
     rows = conn.execute(f"""
-        SELECT
-            p.PRACTICE_CODE,
-            pr.PRACTICE_NAME,
-            pr.POSTCODE,
-            SUM(p.ITEMS) AS TOTAL_ITEMS
-        FROM {db.WAREHOUSE_SCHEMA}.PRESCRIPTION p
+        SELECT sub.PRACTICE_CODE, pr.PRACTICE_NAME, pr.POSTCODE, sub.TOTAL_ITEMS
+        FROM (
+            SELECT PRACTICE_CODE, SUM(ITEMS) AS TOTAL_ITEMS
+            FROM {db.WAREHOUSE_SCHEMA}.PRESCRIPTION
+            GROUP BY PRACTICE_CODE
+        ) sub
         LEFT JOIN {db.WAREHOUSE_SCHEMA}.PRACTICE pr
-            ON p.PRACTICE_CODE = pr.PRACTICE_CODE
-        GROUP BY p.PRACTICE_CODE, pr.PRACTICE_NAME, pr.POSTCODE
-        ORDER BY TOTAL_ITEMS DESC
+            ON sub.PRACTICE_CODE = pr.PRACTICE_CODE
+        ORDER BY sub.TOTAL_ITEMS DESC
         LIMIT 10
     """).fetchall()
 

@@ -91,6 +91,7 @@ def insert_into_warehouse(conn: pyexasol.ExaConnection, period: str) -> None:
         SELECT
             PRACTICE,
             BNF_CODE,
+            SUBSTR(BNF_CODE, 1, 9),
             BNF_NAME,
             ITEMS,
             NIC,
@@ -136,6 +137,7 @@ def main() -> None:
         CREATE TABLE IF NOT EXISTS {db.WAREHOUSE_SCHEMA}.PRESCRIPTION (
             PRACTICE_CODE VARCHAR(20),
             BNF_CODE VARCHAR(15),
+            CHEMICAL_CODE VARCHAR(9),
             DRUG_NAME VARCHAR(200),
             ITEMS DECIMAL(18,0),
             NET_COST DECIMAL(18,2),
