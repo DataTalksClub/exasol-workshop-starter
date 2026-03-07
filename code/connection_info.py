@@ -15,7 +15,7 @@ from pathlib import Path
 
 def find_deployment_files(deployment_dir=None):
     if deployment_dir is None:
-        deployment_dir = Path.home() / "deployment"
+        deployment_dir = Path(__file__).parent.parent / "deployment"
     else:
         deployment_dir = Path(deployment_dir)
 
@@ -91,19 +91,6 @@ def main():
     except Exception as e:
         print("Could not fetch fingerprint: {}".format(e))
         fingerprint = None
-
-    print()
-    print("=" * 50)
-    print("VS Code Connection Settings")
-    print("=" * 50)
-    print("  Connection Name:  Exasol Workshop")
-    print("  Host:             {}".format(config["host"]))
-    print("  Port:             {}".format(config["port"]))
-    print("  Username:         {}".format(config["user"]))
-    print("  Password:         {}".format(config["password"]))
-    print("  TLS Validation:   Fingerprint (pin certificate)")
-    if fingerprint:
-        print("  Fingerprint:      {}".format(fingerprint))
 
 
 if __name__ == "__main__":

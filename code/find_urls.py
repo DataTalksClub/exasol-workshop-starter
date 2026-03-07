@@ -1,55 +1,91 @@
 """
-Find NHS Prescribing Data URLs from NHS BSA Open Data Portal.
+Find NHS Prescribing Data CSV URLs from data.gov.uk (2010-2018).
 
-Queries the API and saves CSV file URLs to prescription_urls.json.
-Data source: https://opendata.nhsbsa.net/dataset/english-prescribing-data-epd
+Scrapes the dataset page to find CSV file URLs grouped by month.
+Each month has 3 files: PDPI (prescriptions), ADDR (addresses), CHEM (chemicals).
+
+Source: https://www.data.gov.uk/dataset/176ae264-2484-4afe-a297-d51798eb8228/prescribing-by-gp-practice-presentation-level
 """
 
-import requests
-import json
+import os
 import re
+import json
+from urllib.parse import unquote
 
-API_URL = "https://opendata.nhsbsa.net/api/3/action/package_show"
-DATASET_ID = "english-prescribing-data-epd"
-OUTPUT_FILE = "prescription_urls.json"
+import requests
+from bs4 import BeautifulSoup
 
 
-def get_csv_urls():
-    print("Finding NHS Prescribing Data URLs...")
-    response = requests.get(API_URL, params={"id": DATASET_ID})
-    data = response.json()
-    resources = data["result"].get("resources", [])
+DATASET_URL = "https://www.data.gov.uk/dataset/176ae264-2484-4afe-a297-d51798eb8228/prescribing-by-gp-practice-presentation-level"
+OUTPUT_FILE = "data/prescription_urls.json"
 
-    csv_files = []
-    for r in resources:
-        if r.get("format", "").lower() == "csv":
-            name = r.get("name", "")
-            match = re.match(r"EPD_(\d{6})", name)
-            if match:
-                period = match.group(1)
-                csv_files.append({
-                    "period": period,
-                    "year": period[:4],
-                    "month": period[4:6],
-                    "name": name,
-                    "url": r.get("url", ""),
-                    "size_bytes": int(r.get("size", 0)),
-                    "size_mb": int(r.get("size", 0)) / (1024 * 1024),
-                })
 
-    csv_files = sorted(csv_files, key=lambda x: x["period"], reverse=True)
-    print("Found {} CSV files".format(len(csv_files)))
-    if csv_files:
-        print("Range: {} to {}".format(csv_files[-1]["period"], csv_files[0]["period"]))
-        total_gb = sum(f["size_bytes"] for f in csv_files) / (1024**3)
-        print("Total size: {:.2f} GB".format(total_gb))
-    return csv_files
+def extract_period(url):
+    decoded = unquote(url)
+    match = re.search(r"T(\d{6})", decoded)
+    return match.group(1) if match else None
+
+
+def get_file_type(url):
+    upper = unquote(url).upper()
+    if "PDPI" in upper:
+        return "pdpi"
+    elif "ADDR" in upper:
+        return "addr"
+    elif "CHEM" in upper and "SUBS" in upper:
+        return "chem"
+    return None
+
+
+def main():
+    print("Fetching {}...".format(DATASET_URL))
+    response = requests.get(DATASET_URL, timeout=30)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    months = {}
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        if not href.lower().endswith(".csv"):
+            continue
+
+        period = extract_period(href)
+        if not period:
+            continue
+
+        file_type = get_file_type(href)
+        if not file_type:
+            continue
+
+        if period not in months:
+            months[period] = {"period": period, "pdpi": None, "addr": None, "chem": None}
+        months[period][file_type] = href
+
+    result = sorted(months.values(), key=lambda x: x["period"])
+    print("Found {} months of data".format(len(result)))
+    if result:
+        print("Range: {} to {}".format(result[0]["period"], result[-1]["period"]))
+
+    for m in result[:3]:
+        print("  {}:".format(m["period"]))
+        for key in ["pdpi", "addr", "chem"]:
+            if m[key]:
+                print("    {}: {}...".format(key, m[key].split("/")[-1][:50]))
+
+    output = {
+        "source_url": DATASET_URL,
+        "total_months": len(result),
+        "months": result
+    }
+
+    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+    with open(OUTPUT_FILE, "w") as f:
+        json.dump(output, f, indent=2)
+
+    print("Saved to {}".format(OUTPUT_FILE))
 
 
 if __name__ == "__main__":
-    urls = get_csv_urls()
-    with open(OUTPUT_FILE, "w") as f:
-        json.dump(urls, f, indent=2)
-    print("Saved to {}".format(OUTPUT_FILE))
-    for u in urls[:5]:
-        print("  {}: {:.1f} MB".format(u["period"], u["size_mb"]))
+    main()
