@@ -1153,6 +1153,17 @@ Why `concurrencyLimit: 4`? The Exasol Community Edition allows only 5 parallel c
 
 Some months may fail due to unavailable source URLs (a few older months link to servers that are no longer online). The flow continues past failures — you'll see failed months marked in the UI, but the rest will keep loading. Since all our scripts are idempotent, you can re-run the flow safely. Already-loaded months will be overwritten with identical data.
 
+### Export to Parquet
+
+Once the data is loaded, you can export the warehouse tables to Parquet files for use outside Exasol (e.g. for analysis with DuckDB, Pandas, or Spark):
+
+```bash
+cd code
+uv run python export_parquet.py
+```
+
+This exports the three warehouse tables (PRACTICE, CHEMICAL, PRESCRIPTION) to `data/parquet/`. The PRESCRIPTION table has ~1 billion rows and is exported in chunks of 25 million rows. The small tables (PRACTICE, CHEMICAL) export instantly.
+
 
 ## Managing the cluster
 
