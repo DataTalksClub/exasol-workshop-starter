@@ -1,14 +1,17 @@
 """
 Export warehouse tables to Parquet files.
 
-Streams data from Exasol via pyexasol HTTP transport (CSV),
-reads in chunks with PyArrow, and writes chunked Parquet files.
+PRESCRIPTION is exported per period (~10M rows each, ~700MB CSV).
+PRACTICE and CHEMICAL are small and exported in one go.
+
+Uses pyexasol HTTP transport (CSV) then PyArrow for Parquet conversion.
 
 Usage:
     uv run python export_parquet.py [--output-dir data/parquet]
 """
 
 import argparse
+import os
 import time
 from pathlib import Path
 
@@ -18,8 +21,6 @@ import pyarrow.parquet as pq
 
 import utils.db as db
 
-
-CHUNK_SIZE = 10_000_000
 
 SCHEMAS = {
     "PRACTICE": pa.schema([
@@ -48,57 +49,13 @@ SCHEMAS = {
 }
 
 
-def export_callback(pipe, dst, **kwargs):
-    """Callback for export_to_callback: reads CSV stream, writes chunked Parquet."""
-    schema = kwargs["schema"]
-    table_dir = kwargs["table_dir"]
-    table_name = kwargs["table_name"]
-    count = kwargs["count"]
-
+def csv_to_parquet(csv_path: str, parquet_path: str, schema: pa.Schema) -> None:
     convert_options = pcsv.ConvertOptions(column_types=schema)
-    read_options = pcsv.ReadOptions(block_size=64 * 1024 * 1024)
-    parse_options = pcsv.ParseOptions(newlines_in_values=True)
-    reader = pcsv.open_csv(pipe, convert_options=convert_options,
-                           read_options=read_options,
-                           parse_options=parse_options)
-
-    chunk_num = 0
-    rows_written = 0
-    batch_buf = []
-    batch_rows = 0
-
-    for batch in reader:
-        batch_buf.append(batch)
-        batch_rows += len(batch)
-
-        if batch_rows >= CHUNK_SIZE:
-            chunk_num += 1
-            chunk_table = pa.Table.from_batches(batch_buf, schema=schema)
-            parquet_path = table_dir / f"{table_name}-{chunk_num:04d}.parquet"
-            pq.write_table(chunk_table, str(parquet_path))
-            rows_written += batch_rows
-            size_mb = parquet_path.stat().st_size / (1024 * 1024)
-            pct = rows_written / count * 100
-            print(f"\r  {rows_written:,} / {count:,} ({pct:.0f}%) — {parquet_path.name} ({size_mb:.0f} MB)  ",
-                  end="", flush=True)
-            batch_buf = []
-            batch_rows = 0
-
-    if batch_buf:
-        chunk_num += 1
-        chunk_table = pa.Table.from_batches(batch_buf, schema=schema)
-        parquet_path = table_dir / f"{table_name}-{chunk_num:04d}.parquet"
-        pq.write_table(chunk_table, str(parquet_path))
-        rows_written += batch_rows
-        size_mb = parquet_path.stat().st_size / (1024 * 1024)
-        pct = rows_written / count * 100
-        print(f"\r  {rows_written:,} / {count:,} ({pct:.0f}%) — {parquet_path.name} ({size_mb:.0f} MB)  ",
-              end="", flush=True)
-
-    print(f"\n  {chunk_num} file(s)")
+    table = pcsv.read_csv(csv_path, convert_options=convert_options)
+    pq.write_table(table, parquet_path)
 
 
-def export_table(conn, table: str, output_dir: Path) -> None:
+def export_small_table(conn, table: str, output_dir: Path) -> None:
     full_name = f"{db.WAREHOUSE_SCHEMA}.{table}"
     schema = SCHEMAS[table]
     count = conn.execute(f"SELECT COUNT(*) FROM {full_name}").fetchone()[0]
@@ -106,23 +63,59 @@ def export_table(conn, table: str, output_dir: Path) -> None:
     table_dir = output_dir / table.lower()
     table_dir.mkdir(parents=True, exist_ok=True)
 
-    table_name = table.lower()
     print(f"{table}: {count:,} rows")
     t0 = time.time()
 
-    conn.export_to_callback(
-        export_callback, None,
-        f"SELECT * FROM {full_name}",
-        export_params={"with_column_names": True},
-        callback_params={
-            "schema": schema,
-            "table_dir": table_dir,
-            "table_name": table_name,
-            "count": count,
-        },
-    )
+    csv_path = str(table_dir / f"{table.lower()}.csv")
+    parquet_path = str(table_dir / f"{table.lower()}.parquet")
 
-    print(f"  Done in {time.time() - t0:.1f}s")
+    conn.export_to_file(csv_path, f"SELECT * FROM {full_name}",
+                        export_params={"with_column_names": True})
+    csv_to_parquet(csv_path, parquet_path, schema)
+    os.remove(csv_path)
+
+    size_mb = os.path.getsize(parquet_path) / (1024 * 1024)
+    print(f"  {size_mb:.1f} MB, {time.time() - t0:.1f}s")
+
+
+def export_prescriptions(conn, output_dir: Path) -> None:
+    table_dir = output_dir / "prescription"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    schema = SCHEMAS["PRESCRIPTION"]
+
+    periods = conn.execute(
+        f"SELECT DISTINCT PERIOD FROM {db.WAREHOUSE_SCHEMA}.PRESCRIPTION ORDER BY PERIOD"
+    ).fetchall()
+    periods = [r[0] for r in periods]
+
+    total = conn.execute(f"SELECT COUNT(*) FROM {db.WAREHOUSE_SCHEMA}.PRESCRIPTION").fetchone()[0]
+    print(f"PRESCRIPTION: {total:,} rows, {len(periods)} periods")
+
+    rows_done = 0
+    t0 = time.time()
+
+    for i, period in enumerate(periods):
+        csv_path = str(table_dir / f"{period}.csv")
+        parquet_path = str(table_dir / f"{period}.parquet")
+
+        conn.export_to_file(csv_path,
+            f"SELECT * FROM {db.WAREHOUSE_SCHEMA}.PRESCRIPTION WHERE PERIOD = '{period}'",
+            export_params={"with_column_names": True})
+
+        csv_to_parquet(csv_path, parquet_path, schema)
+        os.remove(csv_path)
+
+        size_mb = os.path.getsize(parquet_path) / (1024 * 1024)
+        rows_done += conn.execute(
+            f"SELECT COUNT(*) FROM {db.WAREHOUSE_SCHEMA}.PRESCRIPTION WHERE PERIOD = '{period}'"
+        ).fetchone()[0]
+        elapsed = time.time() - t0
+        pct = rows_done / total * 100
+        print(f"  [{i+1}/{len(periods)}] {period}: {size_mb:.0f} MB, "
+              f"{pct:.0f}% done, {elapsed:.0f}s elapsed")
+
+    total_size = sum(f.stat().st_size for f in table_dir.glob("*.parquet")) / (1024 * 1024)
+    print(f"  {total_size:.0f} MB total, {time.time() - t0:.0f}s")
 
 
 def main():
@@ -135,11 +128,12 @@ def main():
     db.ensure_schemas(conn)
 
     start = time.time()
-    for table in SCHEMAS:
-        export_table(conn, table, output_dir)
+    export_small_table(conn, "PRACTICE", output_dir)
+    export_small_table(conn, "CHEMICAL", output_dir)
+    export_prescriptions(conn, output_dir)
 
     conn.close()
-    print(f"\nTotal: {time.time() - start:.1f}s")
+    print(f"\nTotal: {time.time() - start:.0f}s")
 
 
 if __name__ == "__main__":

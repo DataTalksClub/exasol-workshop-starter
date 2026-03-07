@@ -12,16 +12,15 @@ curl https://downloads.exasol.com/exasol-personal/installer.sh | bash
 mv exasol ~/bin/
 ```
 
-Or download it from the [Exasol Personal Edition page](https://downloads.exasol.com/exasol-personal) and place it in `~/bin/`.
+Or download it from the [Exasol Personal Edition page](https://downloads.exasol.com/exasol-personal) and place it in `~/bin/` (or any other folder on the `PATH`).
 
 ### Deploy Exasol Personal Edition
 
-Create a `deployment` directory inside the repo and run the installer:
+Create a `deployment` directory inside the repo:
 
 ```bash
 mkdir deployment
 cd deployment
-exasol install
 ```
 
 The `AWS_DEFAULT_REGION` is set to `eu-central-1` in the Codespace. If you're not using Codespaces, set it before running `exasol install`:
@@ -30,23 +29,17 @@ The `AWS_DEFAULT_REGION` is set to `eu-central-1` in the Codespace. If you're no
 export AWS_DEFAULT_REGION=eu-central-1
 ```
 
+Run the installer:
+
+```bash
+exasol install
+```
+
 Accept the EULA when prompted. The deployment takes 7-10 minutes.
 
 All `exasol` commands must be run from within the deployment directory.
 
-By default it deploys a single-node cluster with `r6i.xlarge` (4 vCPUs, 32 GB RAM). To customize:
-
-```bash
-exasol install --cluster-size 3 --instance-type r6i.2xlarge
-```
-
-Available instance types:
-
-| Instance Type | vCPUs | RAM    | Use Case              |
-|---------------|-------|--------|-----------------------|
-| r6i.xlarge    | 4     | 32 GB  | Default, getting started |
-| r6i.2xlarge   | 8     | 64 GB  | Larger workloads      |
-| r6i.4xlarge   | 16    | 128 GB | High performance      |
+By default it deploys a single-node cluster with [`r6i.xlarge`](https://instances.vantage.sh/aws/ec2/r6i.xlarge) (4 vCPUs, 32 GB RAM, [$0.252/hour in eu-central-1](https://instances.vantage.sh/aws/ec2/r6i.xlarge)).
 
 The `exasol install` command generates Terraform files, provisions AWS infrastructure (VPC, EC2, security groups, etc.), and installs Exasol Personal on the EC2 instance.
 
@@ -198,13 +191,6 @@ No mention of CRLF, so this file uses LF (`\n`) line endings.
 
 The columns are: PERIOD, PRACTICE_CODE, PRACTICE_NAME, ADDRESS_1, ADDRESS_2, ADDRESS_3, COUNTY, POSTCODE.
 
-Our goal is to get a clean table like this:
-
-| PERIOD | PRACTICE_CODE | PRACTICE_NAME | ADDRESS | COUNTY | POSTCODE |
-|--------|---------------|---------------|---------|--------|----------|
-| 201008 | A81001 | THE DENSHAM SURGERY | THE HEALTH CENTRE, LAWSON STREET, STOCKTON | CLEVELAND | TS18 1HU |
-| 201008 | A81002 | QUEENS PARK MEDICAL CENTRE | QUEENS PARK MEDICAL CTR, FARRER STREET, STOCKTON ON TEES | CLEVELAND | TS18 2AW |
-
 - Each row is a GP practice with its address and postcode
 - The PRACTICE_CODE is the key that links to the PRACTICE field in PDPI, so we can join them to answer geographic questions (e.g. prescriptions in a specific postcode area)
 - To get there we need to TRIM the space-padded values, combine the three address fields into one, and drop the extra empty column
@@ -226,7 +212,7 @@ CREATE SCHEMA IF NOT EXISTS PRESCRIPTIONS_UK_STAGING;
 OPEN SCHEMA PRESCRIPTIONS_UK_STAGING;
 ```
 
-First, we need a table to hold the raw data. The column definitions must match the CSV exactly - including the extra empty column from the trailing comma. We use wide VARCHARs because the values are space-padded, and if the column is too narrow, the database will reject the import:
+First, we need a table to hold the raw data. The column definitions must match the CSV exactly - including the extra empty column from the trailing comma:
 
 ```sql
 CREATE TABLE STG_RAW_ADDR_201008 (
@@ -241,6 +227,8 @@ CREATE TABLE STG_RAW_ADDR_201008 (
     EXTRA_PADDING VARCHAR(2000)
 );
 ```
+
+We use wide VARCHARs because the values are space-padded, and if the column is too narrow, the database will reject the import.
 
 The `exasol connect` terminal treats newlines as Enter, so multi-line SQL doesn't paste well. Here's the same statement as a single line you can copy-paste into the terminal (later we'll switch to Python where this won't be an issue):
 
@@ -278,22 +266,9 @@ Check a few rows:
 SELECT * FROM STG_RAW_ADDR_201008 LIMIT 5;
 ```
 
-Result: 
+The terminal truncates the columns, so it's not obvious here, but the values are still heavily padded with spaces (as we saw in the raw CSV).
 
-```
-> SELECT * FROM STG_RAW_ADDR_201008 LIMIT 5;
-┌──────┬────────────┬─────────────┬──────────┬──────────┬──────────┬───────┬─────────┬─────────────┐
-│ PERI │ PRACTICE_C │ PRACTICE_NA │ ADDRESS_ │ ADDRESS_ │ ADDRESS_ │ COUNT │ POSTCOD │ EXTRA_PADDI │
-├──────┼────────────┼─────────────┼──────────┼──────────┼──────────┼───────┼─────────┼─────────────┤
-│ 2010 │ F84744     │ WHITECHAPEL │ 174 WHIT │          │ LONDON   │       │ E1 1BZ  │             │
-│ 2010 │ M91660     │ DARLASTON H │ PINFOLD  │ DARLASTO │          │       │ WS10 8S │             │
-│ 2010 │ G81696     │ THE CHASELE │ GREEN ST │ 118-122  │ EASTBOUR │       │ BN21 1R │             │
-│ 2010 │ P87663     │ SWINTON HAL │ THE COTT │ SWINTON  │ 188 WORS │ SWINT │ M27 5SN │             │
-│ 2010 │ H82645     │ CRAWLEY DAY │ 1ST FLOO │ BROADFIE │ BROADFIE │ WEST  │ RH11 9B │             │
-└──────┴────────────┴─────────────┴──────────┴──────────┴──────────┴───────┴─────────┴─────────────┘
-```
-
-The terminal truncates the columns, so it's not obvious here, but the values are still heavily padded with spaces (as we saw in the raw CSV). We want to TRIM that padding and drop the useless EXTRA_PADDING column. This is the next step - moving the data from the raw table to a clean staging table:
+We want to TRIM that padding and drop the useless EXTRA_PADDING column. This is the next step - moving the data from the raw table to a clean staging table:
 
 ```sql
 CREATE TABLE STG_ADDR_201008 (
@@ -375,7 +350,7 @@ Single line:
 CREATE TABLE STG_PROCESSED_ADDR_201008 (PERIOD VARCHAR(6), PRACTICE_CODE VARCHAR(20), PRACTICE_NAME VARCHAR(200), ADDRESS VARCHAR(600), COUNTY VARCHAR(200), POSTCODE VARCHAR(20));
 ```
 
-Concatenate the address fields. In Exasol, empty strings are NULL, so we use `COALESCE` to turn NULLs into empty strings. `REPLACE` cleans up double commas from missing fields, and `TRIM` removes leftover commas from the edges:
+Concatenate the address fields. Use `COALESCE` to turn NULLs into empty strings. `REPLACE` cleans up double commas from missing fields, and `TRIM` removes leftover commas from the edges:
 
 ```sql
 INSERT INTO STG_PROCESSED_ADDR_201008
@@ -550,7 +525,7 @@ SELECT * FROM STG_CHEM_201008 LIMIT 5;
 
 [PDPI](https://files.digital.nhs.uk/B9/14BEAF/T201008PDPI%20BNFT.CSV) - ~10M rows per month.
 
-The full file is over 1 GB, so we use `curl -r` to download just the first 10KB:
+The full file is over 1GB, so we use `curl -r` to download just the first 10KB:
 
 ```bash
 curl -r 0-9999 "https://files.digital.nhs.uk/B9/14BEAF/T201008PDPI%20BNFT.CSV" -o data/pdpi_201008_sample.csv
@@ -761,13 +736,25 @@ MERGE inserts new practices and updates existing ones. The PERIOD column tracks 
 ```sql
 MERGE INTO PRESCRIPTIONS_UK.PRACTICE tgt
 USING PRESCRIPTIONS_UK_STAGING.STG_PROCESSED_ADDR_201008 src
-ON tgt.PRACTICE_CODE = src.PRACTICE_CODE
+  ON tgt.PRACTICE_CODE = src.PRACTICE_CODE
+
 WHEN MATCHED THEN UPDATE SET
-    tgt.PRACTICE_NAME = CASE WHEN src.PERIOD >= tgt.PERIOD THEN src.PRACTICE_NAME ELSE tgt.PRACTICE_NAME END,
-    tgt.ADDRESS = CASE WHEN src.PERIOD >= tgt.PERIOD THEN src.ADDRESS ELSE tgt.ADDRESS END,
-    tgt.COUNTY = CASE WHEN src.PERIOD >= tgt.PERIOD THEN src.COUNTY ELSE tgt.COUNTY END,
-    tgt.POSTCODE = CASE WHEN src.PERIOD >= tgt.PERIOD THEN src.POSTCODE ELSE tgt.POSTCODE END,
-    tgt.PERIOD = CASE WHEN src.PERIOD >= tgt.PERIOD THEN src.PERIOD ELSE tgt.PERIOD END
+    tgt.PRACTICE_NAME =
+        CASE WHEN src.PERIOD >= tgt.PERIOD
+             THEN src.PRACTICE_NAME ELSE tgt.PRACTICE_NAME END,
+    tgt.ADDRESS =
+        CASE WHEN src.PERIOD >= tgt.PERIOD
+             THEN src.ADDRESS ELSE tgt.ADDRESS END,
+    tgt.COUNTY =
+        CASE WHEN src.PERIOD >= tgt.PERIOD
+             THEN src.COUNTY ELSE tgt.COUNTY END,
+    tgt.POSTCODE =
+        CASE WHEN src.PERIOD >= tgt.PERIOD
+             THEN src.POSTCODE ELSE tgt.POSTCODE END,
+    tgt.PERIOD =
+        CASE WHEN src.PERIOD >= tgt.PERIOD
+             THEN src.PERIOD ELSE tgt.PERIOD END
+
 WHEN NOT MATCHED THEN INSERT VALUES (
     src.PRACTICE_CODE, src.PRACTICE_NAME, src.ADDRESS,
     src.COUNTY, src.POSTCODE, src.PERIOD
@@ -810,15 +797,19 @@ Same MERGE pattern - insert new chemicals, update existing ones if the period is
 ```sql
 MERGE INTO PRESCRIPTIONS_UK.CHEMICAL tgt
 USING (
-    SELECT
-        CHEM_SUB,
-        NAME,
-        PERIOD
+    SELECT CHEM_SUB, NAME, PERIOD
     FROM PRESCRIPTIONS_UK_STAGING.STG_CHEM_201008
-) src ON tgt.CHEMICAL_CODE = src.CHEM_SUB
+) src
+  ON tgt.CHEMICAL_CODE = src.CHEM_SUB
+
 WHEN MATCHED THEN UPDATE SET
-    tgt.CHEMICAL_NAME = CASE WHEN src.PERIOD >= tgt.PERIOD THEN src.NAME ELSE tgt.CHEMICAL_NAME END,
-    tgt.PERIOD = CASE WHEN src.PERIOD >= tgt.PERIOD THEN src.PERIOD ELSE tgt.PERIOD END
+    tgt.CHEMICAL_NAME =
+        CASE WHEN src.PERIOD >= tgt.PERIOD
+             THEN src.NAME ELSE tgt.CHEMICAL_NAME END,
+    tgt.PERIOD =
+        CASE WHEN src.PERIOD >= tgt.PERIOD
+             THEN src.PERIOD ELSE tgt.PERIOD END
+
 WHEN NOT MATCHED THEN INSERT VALUES (
     src.CHEM_SUB, src.NAME, src.PERIOD
 );

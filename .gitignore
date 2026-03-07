@@ -1,0 +1,14 @@
+__pycache__
+.venv/
+
+# Deployment secrets and state
+deployment/secrets-*.json
+deployment/*.pem
+deployment/terraform.tfstate
+deployment/terraform.tfstate.backup
+deployment/.terraform/
+deployment/tofu
+deployment/.workflowState.json
+
+# Data files
+data/

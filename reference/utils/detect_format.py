@@ -29,7 +29,7 @@ def download_sample(url: str, sample_size: int = 4096) -> bytes:
 
 
 def detect_row_separator(sample: bytes) -> str:
-    if b"\r\n" in sample[:100]:
+    if b"\r\n" in sample:
         return "CRLF"
     else:
         return "LF"
