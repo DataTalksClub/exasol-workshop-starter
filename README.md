@@ -2,49 +2,9 @@
 
 ## Getting Started
 
-### 1. Fork this repo
+Choose your setup:
 
-Click the "Fork" button at the top right of this page to create your own copy.
+- [Codespaces setup](setup/codespaces.md) (recommended) — everything is pre-installed, AWS access is configured automatically
+- [Local setup](setup/local.md) — run on your own machine with your own AWS account
 
-### 2. Set the passphrase
-
-Your instructor will share the passphrase during the workshop.
-
-Via the web UI:
-
-1. Go to [github.com/settings/codespaces](https://github.com/settings/codespaces) → New secret
-2. Name: `WORKSHOP_PASSPHRASE`
-3. Value: the passphrase from your instructor
-4. Repository access: select your fork (`<your-username>/exasol-workshop-starter`)
-
-Or via the CLI:
-
-```bash
-gh secret set WORKSHOP_PASSPHRASE --user --repos <your-username>/exasol-workshop-starter --app codespaces
-# paste the passphrase when prompted
-```
-
-### 3. Create a Codespace
-
-Via the web UI: go to your fork → Code → Codespaces → Create codespace on main
-
-Or via the CLI:
-
-```bash
-gh codespace create --repo <your-username>/exasol-workshop-starter --branch main --machine basicLinux32gb
-gh codespace ssh  # or open in VS Code
-```
-
-AWS access is configured automatically. Verify:
-
-```bash
-aws sts get-caller-identity
-```
-
-### 4. Follow the workshop instructions
-
-See [workshop.md](workshop.md) for the full workshop guide.
-
-### Running locally (without Codespaces)
-
-If you prefer to run locally using your own AWS account, see [local-setup.md](local-setup.md).
+Then follow [workshop.md](workshop.md) for the full workshop guide.

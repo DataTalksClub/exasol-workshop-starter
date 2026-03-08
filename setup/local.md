@@ -49,4 +49,4 @@ aws sts get-caller-identity
 
 ## Follow the workshop
 
-Once the tools are installed and AWS is configured, follow [workshop.md](workshop.md).
+Once the tools are installed and AWS is configured, follow [workshop.md](../workshop.md).
