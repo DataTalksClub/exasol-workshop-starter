@@ -1,7 +1,7 @@
 FROM mcr.microsoft.com/devcontainers/base:ubuntu
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl unzip python3 python3-pip \
+    curl unzip python3 python3-pip file \
     && rm -rf /var/lib/apt/lists/*
 
 # AWS CLI
