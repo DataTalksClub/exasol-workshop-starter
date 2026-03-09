@@ -1,0 +1,33 @@
+id: load_pdpi
+namespace: prescriptions
+
+description: |
+  Load PDPI (prescription items) for a given period.
+  Stages: ingest raw CSV → trim whitespace → insert into warehouse.
+
+inputs:
+  - id: period
+    type: STRING
+    description: Period to load (e.g. 201008)
+
+tasks:
+  - id: load_raw
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /workspace/code && uv run python load_pdpi.py --period {{inputs.period}} --step load_raw
+
+  - id: trim
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /workspace/code && uv run python load_pdpi.py --period {{inputs.period}} --step trim
+
+  - id: insert
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /workspace/code && uv run python load_pdpi.py --period {{inputs.period}} --step insert

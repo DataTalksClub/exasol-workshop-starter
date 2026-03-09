@@ -1,0 +1,51 @@
+id: load_month
+namespace: prescriptions
+
+description: |
+  Load one month of NHS prescription data into Exasol.
+  Calls load_addr, load_chem, and load_pdpi subflows sequentially.
+
+inputs:
+  - id: period
+    type: STRING
+    description: Period to load (e.g. 201008)
+
+tasks:
+  - id: addr
+    type: io.kestra.plugin.core.flow.Subflow
+    namespace: prescriptions
+    flowId: load_addr
+    inputs:
+      period: "{{inputs.period}}"
+    wait: true
+    allowFailure: true
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT10S
+
+  - id: chem
+    type: io.kestra.plugin.core.flow.Subflow
+    namespace: prescriptions
+    flowId: load_chem
+    inputs:
+      period: "{{inputs.period}}"
+    wait: true
+    allowFailure: true
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT10S
+
+  - id: pdpi
+    type: io.kestra.plugin.core.flow.Subflow
+    namespace: prescriptions
+    flowId: load_pdpi
+    inputs:
+      period: "{{inputs.period}}"
+    wait: true
+    allowFailure: true
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT10S

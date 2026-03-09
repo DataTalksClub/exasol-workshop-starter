@@ -1,0 +1,33 @@
+id: load_chem
+namespace: prescriptions
+
+description: |
+  Load CHEM (chemical substances) for a given period.
+  Stages: ingest raw CSV → trim whitespace → merge into warehouse.
+
+inputs:
+  - id: period
+    type: STRING
+    description: Period to load (e.g. 201008)
+
+tasks:
+  - id: load_raw
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /workspace/code && uv run python load_chem.py --period {{inputs.period}} --step load_raw
+
+  - id: trim
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /workspace/code && uv run python load_chem.py --period {{inputs.period}} --step trim
+
+  - id: merge
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /workspace/code && uv run python load_chem.py --period {{inputs.period}} --step merge

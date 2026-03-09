@@ -152,6 +152,19 @@ The columns are: PERIOD, PRACTICE_CODE, PRACTICE_NAME, ADDRESS_1, ADDRESS_2, ADD
 - The PRACTICE_CODE is the key that links to the PRACTICE field in PDPI, so we can join them to answer geographic questions (e.g. prescriptions in a specific postcode area)
 - To get there we need to TRIM the space-padded values, combine the three address fields into one, and drop the extra empty column
 
+Add this to your notes:
+
+```bash
+cat > data/notes.md << 'EOF'
+## ADDR (practice addresses)
+- No header row
+- CRLF line endings
+- ~10K rows per month
+- Values are space-padded, trailing comma creates an extra empty column
+- Columns: PERIOD, PRACTICE_CODE, PRACTICE_NAME, ADDRESS_1, ADDRESS_2, ADDRESS_3, COUNTY, POSTCODE
+EOF
+```
+
 ### CHEM - chemical substances (dimension)
 
 [CHEM](https://files.digital.nhs.uk/15/ED9D38/T201008CHEM%20SUBS.CSV) - ~3.5K rows per month:
@@ -200,6 +213,20 @@ CRLF, same as ADDR. Comparing with ADDR:
 - The data rows only have 2 values (code and name) plus a trailing comma
 - Same space-padding as ADDR
 - Same CRLF line endings as ADDR
+
+Add to your notes:
+
+```bash
+cat >> data/notes.md << 'EOF'
+
+## CHEM (chemical substances)
+- Has header row (unusual: third column contains period value instead of column name)
+- CRLF line endings
+- ~3.5K rows per month
+- Same space-padding and trailing comma as ADDR
+- Columns: CHEM_SUB, NAME, PERIOD
+EOF
+```
 
 ### PDPI - prescriptions (fact)
 
@@ -256,34 +283,18 @@ CRLF, same as ADDR and CHEM.
 - There's a trailing comma after the last field, creating an extra empty column
 - The file has a header row
 
-### Summary
-
-Create a `notes.md` to record what we've learned about the data format. We'll need these details for the SQL IMPORT statements:
+Add to your notes:
 
 ```bash
-cat > data/notes.md << 'EOF'
-# NHS Prescribing Data - Format Notes
-
-## Common patterns
-- All files use CRLF line endings
-- Values are space-padded
-- Trailing comma creates an extra empty column
-
-## ADDR (practice addresses)
-- No header row
-- ~10K rows per month
-- Columns: PERIOD, PRACTICE_CODE, PRACTICE_NAME, ADDRESS_1, ADDRESS_2, ADDRESS_3, COUNTY, POSTCODE
-
-## CHEM (chemical substances)
-- Has header row (unusual: third column contains period value instead of column name)
-- ~3.5K rows per month
-- Columns: CHEM_SUB, NAME, PERIOD
+cat >> data/notes.md << 'EOF'
 
 ## PDPI (prescriptions - fact table)
 - Has header row
+- CRLF line endings
 - ~10M rows per month
-- Columns: SHA, PCT, PRACTICE, BNF_CODE, BNF_NAME, ITEMS, NIC, ACT_COST, QUANTITY, PERIOD
+- Same space-padding and trailing comma as ADDR and CHEM
 - Numeric columns are zero-padded (e.g. 0000031, 00000083.79)
+- Columns: SHA, PCT, PRACTICE, BNF_CODE, BNF_NAME, ITEMS, NIC, ACT_COST, QUANTITY, PERIOD
 - PRACTICE links to ADDR.PRACTICE_CODE
 - First 9 chars of BNF_CODE link to CHEM.CHEM_SUB
 EOF
@@ -298,7 +309,13 @@ While Exasol is still deploying, let's set up our Python project:
 ```bash
 mkdir -p code
 cd code
+```
+
+```bash
 uv init
+```
+
+```bash
 uv add requests beautifulsoup4 pyexasol
 ```
 
@@ -327,7 +344,7 @@ It saves `data/prescription_urls.json` with ~101 months of data (2010-2018).
 
 ## Connecting to Exasol
 
-By now the deployment should be complete. Go back to the deployment directory:
+By now the deployment should be complete. Open a new terminal and go to the deployment directory:
 
 ```bash
 cd deployment
@@ -335,7 +352,15 @@ cd deployment
 
 When `exasol install` finishes, it prints connection details: host, port, username, and password. You can also find the password in `secrets-*.json`.
 
-To run SQL queries, set up the VS Code Exasol extension — see [vscode.md](vscode.md) for instructions.
+Exasol exposes a PostgreSQL-compatible interface, so you can connect with any PostgreSQL client. Using `pgcli`:
+
+```bash
+uvx pgcli -h <host> -p 5432 -U sys -W
+```
+
+Replace `<host>` with the DNS name from the deployment output (e.g. `ec2-....compute.amazonaws.com`). Enter the database password when prompted — you can find it in `deployment/secrets-*.json`.
+
+Alternatively, set up the VS Code Exasol extension — see [vscode.md](vscode.md) for instructions.
 
 Test the connection with a simple query:
 
@@ -946,7 +971,9 @@ wget ${PREFIX}/utils/db.py -O utils/db.py
 wget ${PREFIX}/load_addr.py
 ```
 
-This automates the same pipeline we did manually: STG_RAW → STG (trim) → STG_PROCESSED (address concat) → MERGE into PRACTICE. Run it:
+This automates the same pipeline we did manually: STG_RAW → STG (trim) → STG_PROCESSED (address concat) → MERGE into PRACTICE.
+
+Run it:
 
 ```bash
 uv run python load_addr.py --period 201008
@@ -958,7 +985,9 @@ uv run python load_addr.py --period 201008
 wget ${PREFIX}/load_chem.py
 ```
 
-Same pattern as ADDR: STG_RAW → STG (trim) → MERGE into CHEMICAL. Run it:
+Same pattern as ADDR: STG_RAW → STG (trim) → MERGE into CHEMICAL.
+
+Run it:
 
 ```bash
 uv run python load_chem.py --period 201008
@@ -970,7 +999,9 @@ uv run python load_chem.py --period 201008
 wget ${PREFIX}/load_pdpi.py
 ```
 
-This is the big one (~10M rows). Pipeline: STG_RAW → STG (trim) → DELETE + INSERT into PRESCRIPTION. Run it:
+This is the big one (~10M rows). Pipeline: STG_RAW → STG (trim) → DELETE + INSERT into PRESCRIPTION.
+
+Run it:
 
 ```bash
 uv run python load_pdpi.py --period 201008
@@ -1061,7 +1092,7 @@ Wait a minute for it to start, then open the Kestra UI at http://localhost:8080.
 Let's start simple to see how Kestra works. In the Kestra UI, go to Flows, click Create. Paste the following:
 
 ```yaml
-id: hello
+id: load_test_month
 namespace: prescriptions
 
 tasks:
@@ -1097,20 +1128,31 @@ Now try adding a third task yourself - run `load_addr.py` for period `201008`:
 
 Save and Execute. You should see all three tasks complete.
 
+Verify in your SQL terminal that the data was loaded:
+
+```sql
+SELECT COUNT(*) FROM PRESCRIPTIONS_UK.PRACTICE;
+SELECT COUNT(*) FROM PRESCRIPTIONS_UK.CHEMICAL;
+SELECT COUNT(*) FROM PRESCRIPTIONS_UK.PRESCRIPTION;
+```
+
+You should see ~10K practices, ~3.3K chemicals, and ~9.8M prescriptions.
+
 ### Load a single month
 
 We already loaded one month manually. Now let's create a proper flow for it. Each loader script supports a `--step` argument that runs a single stage of the pipeline, so every stage (ingest raw CSV, trim whitespace, transform, warehouse load) becomes a separate step in the Kestra flow - visible in the UI with its own logs and status.
 
-Download the flow definitions:
+Download the flow definitions into `kestra/flows/`. Kestra watches this directory and auto-imports any YAML files — the naming convention `main_<namespace>_<flow_id>.yml` tells Kestra which namespace and ID to use:
 
 ```bash
-wget ${PREFIX}/kestra/load_addr.yml -O kestra/load_addr.yml
-wget ${PREFIX}/kestra/load_chem.yml -O kestra/load_chem.yml
-wget ${PREFIX}/kestra/load_pdpi.yml -O kestra/load_pdpi.yml
-wget ${PREFIX}/kestra/load_month.yml -O kestra/load_month.yml
+mkdir -p kestra/flows
+wget ${PREFIX}/kestra/flows/main_prescriptions_load_addr.yml -O kestra/flows/main_prescriptions_load_addr.yml
+wget ${PREFIX}/kestra/flows/main_prescriptions_load_chem.yml -O kestra/flows/main_prescriptions_load_chem.yml
+wget ${PREFIX}/kestra/flows/main_prescriptions_load_pdpi.yml -O kestra/flows/main_prescriptions_load_pdpi.yml
+wget ${PREFIX}/kestra/flows/main_prescriptions_load_month.yml -O kestra/flows/main_prescriptions_load_month.yml
 ```
 
-Each pipeline type has its own flow definition: [load_addr.yml](reference/kestra/load_addr.yml), [load_chem.yml](reference/kestra/load_chem.yml), and [load_pdpi.yml](reference/kestra/load_pdpi.yml). The [load_month.yml](reference/kestra/load_month.yml) flow calls them as subflows sequentially:
+The flows should appear in the Kestra UI automatically. Each pipeline type has its own flow definition: [load_addr](reference/kestra/flows/main_prescriptions_load_addr.yml), [load_chem](reference/kestra/flows/main_prescriptions_load_chem.yml), and [load_pdpi](reference/kestra/flows/main_prescriptions_load_pdpi.yml). The [load_month](reference/kestra/flows/main_prescriptions_load_month.yml) flow calls them as subflows sequentially:
 
 ```
 load_month(period)
@@ -1123,18 +1165,11 @@ Tasks in a Kestra `tasks` list run sequentially - each task waits for the previo
 
 Note that `load_month` does not include `install_deps` or `find_urls` — those are run once by `load_all` before iterating over months.
 
-Via the UI: go to Flows, click Create, paste the content of `load_month.yml`, click Save. Then click Execute, enter `201008` as the period, and click Execute.
+The flows are auto-imported from the `kestra/flows/` directory. In the UI, go to Flows, find `load_month`, click Execute, enter `201008` as the period, and click Execute.
 
-Via the API:
+Or via the API:
 
 ```bash
-# Create the flow
-curl -u "admin@kestra.io:Admin1234!" \
-  -X POST http://localhost:8080/api/v1/flows \
-  -H "Content-Type: application/x-yaml" \
-  --data-binary @kestra/load_month.yml
-
-# Execute it
 curl -u "admin@kestra.io:Admin1234!" \
   -X POST http://localhost:8080/api/v1/executions/prescriptions/load_month \
   -H "Content-Type: multipart/form-data" \
@@ -1146,28 +1181,21 @@ curl -u "admin@kestra.io:Admin1234!" \
 Download the flow:
 
 ```bash
-wget ${PREFIX}/kestra/load_all.yml -O kestra/load_all.yml
+wget ${PREFIX}/kestra/flows/main_prescriptions_load_all.yml -O kestra/flows/main_prescriptions_load_all.yml
 ```
 
-The [load_all.yml](reference/kestra/load_all.yml) flow reuses `load_month` via `Subflow` — no need to duplicate the pipeline steps:
+The [load_all](reference/kestra/flows/main_prescriptions_load_all.yml) flow reuses `load_month` via `Subflow` — no need to duplicate the pipeline steps:
 
 1. Installs dependencies and finds all available URLs
 2. Uses the Kestra Python library to extract the list of 101 periods
 3. ForEach iterates over all periods, calling `load_month` as a subflow for each one
 4. After all months are loaded, runs `check.py` to verify the final state
 
-Via the UI: go to Flows, click Create, paste the content of `load_all.yml`, click Save, then Execute.
+In the UI, go to Flows, find `load_all`, and click Execute.
 
-Via the API:
+Or via the API:
 
 ```bash
-# Create the flow
-curl -u "admin@kestra.io:Admin1234!" \
-  -X POST http://localhost:8080/api/v1/flows \
-  -H "Content-Type: application/x-yaml" \
-  --data-binary @kestra/load_all.yml
-
-# Execute it
 curl -u "admin@kestra.io:Admin1234!" \
   -X POST http://localhost:8080/api/v1/executions/prescriptions/load_all
 ```

@@ -31,8 +31,15 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - kestra_tmp:/tmp/kestra-wd
       - ../../:/workspace
+      - ./flows:/kestra-flows
     environment:
       KESTRA_CONFIGURATION: |
+        micronaut:
+          io:
+            watch:
+              enabled: true
+              paths:
+                - /kestra-flows
         datasources:
           postgres:
             url: jdbc:postgresql://kestra_postgres:5432/kestra

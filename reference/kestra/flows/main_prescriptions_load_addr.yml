@@ -1,0 +1,40 @@
+id: load_addr
+namespace: prescriptions
+
+description: |
+  Load ADDR (practice addresses) for a given period.
+  Stages: ingest raw CSV → trim whitespace → combine address fields → merge into warehouse.
+
+inputs:
+  - id: period
+    type: STRING
+    description: Period to load (e.g. 201008)
+
+tasks:
+  - id: load_raw
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /workspace/code && uv run python load_addr.py --period {{inputs.period}} --step load_raw
+
+  - id: trim
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /workspace/code && uv run python load_addr.py --period {{inputs.period}} --step trim
+
+  - id: combine_address
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /workspace/code && uv run python load_addr.py --period {{inputs.period}} --step combine_address
+
+  - id: merge
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /workspace/code && uv run python load_addr.py --period {{inputs.period}} --step merge

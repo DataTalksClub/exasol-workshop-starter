@@ -1,0 +1,38 @@
+id: load_all
+namespace: prescriptions
+
+description: |
+  Load all 101 months of NHS prescription data into Exasol.
+  Calls the load_month flow for each period.
+
+tasks:
+  - id: find_urls
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - cd /workspace/code && uv run python find_urls.py
+
+  - id: get_periods
+    type: io.kestra.plugin.scripts.python.Script
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    script: |
+      import json
+      from kestra import Kestra
+      data = json.load(open('/workspace/code/data/prescription_urls.json'))
+      periods = [m['period'] for m in data['months']]
+      Kestra.outputs({'periods': periods})
+
+  - id: load_each_month
+    type: io.kestra.plugin.core.flow.ForEach
+    values: "{{outputs.get_periods.vars.periods}}"
+    concurrencyLimit: 4
+    tasks:
+      - id: load_month
+        type: io.kestra.plugin.core.flow.Subflow
+        namespace: prescriptions
+        flowId: load_month
+        inputs:
+          period: "{{taskrun.value}}"
+        wait: true
