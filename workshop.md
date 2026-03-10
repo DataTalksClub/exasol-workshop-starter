@@ -11,7 +11,7 @@ mkdir deployment
 cd deployment
 ```
 
-The `AWS_DEFAULT_REGION` is set to `eu-central-1` in the Codespace. If you're not using Codespaces, set it before running `exasol install`:
+If you're running it locally, set the region (in codespaces it's already configured):
 
 ```bash
 export AWS_DEFAULT_REGION=eu-central-1
@@ -20,7 +20,7 @@ export AWS_DEFAULT_REGION=eu-central-1
 Run the installer:
 
 ```bash
-exasol install
+exasol install aws
 ```
 
 Accept the EULA when prompted. The deployment takes 7-10 minutes.
@@ -29,7 +29,7 @@ All `exasol` commands must be run from within the deployment directory.
 
 By default it deploys a single-node cluster with [`r6i.xlarge`](https://instances.vantage.sh/aws/ec2/r6i.xlarge) (4 vCPUs, 32 GB RAM, [$0.252/hour in eu-central-1](https://instances.vantage.sh/aws/ec2/r6i.xlarge)).
 
-The `exasol install` command generates Terraform files, provisions AWS infrastructure (VPC, EC2, security groups, etc.), and installs Exasol Personal on the EC2 instance.
+The `exasol install aws` command generates Terraform files, provisions AWS infrastructure (VPC, EC2, security groups, etc.), and installs Exasol Personal on the EC2 instance.
 
 If the deployment process is interrupted, EC2 instances may continue to accrue costs. Check the AWS console and manually terminate any orphaned instances.
 
@@ -69,6 +69,13 @@ deployment/infrastructure/tofu
 ## Exploring the Dataset
 
 The deployment takes 7-10 minutes. While we wait, let's explore the data we'll be loading.
+
+Open a new terminal (leave the deployment running in the first one). Create the `code` directory and go inside — this is where all our scripts and data will live:
+
+```bash
+mkdir -p code
+cd code
+```
 
 We will load the [Prescribing by GP Practice](https://www.data.gov.uk/dataset/176ae264-2484-4afe-a297-d51798eb8228/prescribing-by-gp-practice-presentation-level) dataset published on data.gov.uk. This dataset contains monthly prescription records from GP practices across England from 2010 to 2018 - about 10 million rows per month, over 1 billion rows total.
 
@@ -164,17 +171,15 @@ The columns are: PERIOD, PRACTICE_CODE, PRACTICE_NAME, ADDRESS_1, ADDRESS_2, ADD
 - The PRACTICE_CODE is the key that links to the PRACTICE field in PDPI, so we can join them to answer geographic questions (e.g. prescriptions in a specific postcode area)
 - To get there we need to TRIM the space-padded values, combine the three address fields into one, and drop the extra empty column
 
-Add this to your notes:
+Create a file `data/notes.md` and add these observations:
 
-```bash
-cat > data/notes.md << 'EOF'
+```
 ## ADDR (practice addresses)
 - No header row
 - CRLF line endings
 - ~10K rows per month
 - Values are space-padded, trailing comma creates an extra empty column
 - Columns: PERIOD, PRACTICE_CODE, PRACTICE_NAME, ADDRESS_1, ADDRESS_2, ADDRESS_3, COUNTY, POSTCODE
-EOF
 ```
 
 ### CHEM - chemical substances (dimension)
@@ -228,16 +233,13 @@ CRLF, same as ADDR. Comparing with ADDR:
 
 Add to your notes:
 
-```bash
-cat >> data/notes.md << 'EOF'
-
+```
 ## CHEM (chemical substances)
 - Has header row (unusual: third column contains period value instead of column name)
 - CRLF line endings
 - ~3.5K rows per month
 - Same space-padding and trailing comma as ADDR
 - Columns: CHEM_SUB, NAME, PERIOD
-EOF
 ```
 
 ### PDPI - prescriptions (fact)
@@ -297,9 +299,7 @@ CRLF, same as ADDR and CHEM.
 
 Add to your notes:
 
-```bash
-cat >> data/notes.md << 'EOF'
-
+```
 ## PDPI (prescriptions - fact table)
 - Has header row
 - CRLF line endings
@@ -309,25 +309,16 @@ cat >> data/notes.md << 'EOF'
 - Columns: SHA, PCT, PRACTICE, BNF_CODE, BNF_NAME, ITEMS, NIC, ACT_COST, QUANTITY, PERIOD
 - PRACTICE links to ADDR.PRACTICE_CODE
 - First 9 chars of BNF_CODE link to CHEM.CHEM_SUB
-EOF
 ```
 
 Note that the usual `file` command doesn't reliably detect CRLF in CSV files — it uses "magic" patterns that may suppress line ending information depending on file size and content.
 
 ### Initialize the project
 
-While Exasol is still deploying, let's set up our Python project:
-
-```bash
-mkdir -p code
-cd code
-```
+While Exasol is still deploying, let's set up our Python project (we're already in the `code` directory):
 
 ```bash
 uv init
-```
-
-```bash
 uv add requests beautifulsoup4 pyexasol
 ```
 
@@ -356,15 +347,9 @@ It saves `data/prescription_urls.json` with ~101 months of data (2010-2018).
 
 ## Connecting to Exasol
 
-By now the deployment should be complete. Open a new terminal and go to the deployment directory:
+By now the deployment should be complete. Go back to the terminal where you ran `exasol install aws`.
 
-```bash
-cd deployment
-```
-
-When `exasol install` finishes, it prints connection details: host, port, username, and password. You can also find the password in `secrets.json`, and full connection info in `connection-instructions.txt` and `deployment.json`.
-
-Set up the VS Code Exasol extension — see [vscode.md](vscode.md) for instructions.
+When `exasol install aws` finishes, it prints connection details: host, port, username, and password. You can also find the password in `secrets.json`, and full connection info in `connection-instructions.txt` and `deployment.json`.
 
 Test the connection with a simple query:
 
@@ -376,6 +361,15 @@ SELECT 'Hello from Exasol!' AS greeting;
 ## Loading data via SQL
 
 Now let's load the October 2010 data we downloaded earlier. We'll create staging tables, import the CSVs directly from their URLs, clean up the data, and then build warehouse tables.
+
+Each CSV goes through a multi-step pipeline before landing in the warehouse:
+
+```mermaid
+flowchart LR
+    A1[CSV file] --> B1[STG_RAW\nraw import]
+    B1 --> C1[STG\ntrim and transform]
+    C1 --> D1[Warehouse table]
+```
 
 First, create schemas to organize our tables:
 
@@ -538,6 +532,46 @@ Verify:
 SELECT * FROM STG_PROCESSED_ADDR_201008 LIMIT 5;
 ```
 
+Here's what we did — raw import, trim, and address merge:
+
+```mermaid
+erDiagram
+    STG_RAW_ADDR {
+        varchar PERIOD "space-padded"
+        varchar PRACTICE_CODE "space-padded"
+        varchar PRACTICE_NAME "space-padded"
+        varchar ADDRESS_1 "space-padded"
+        varchar ADDRESS_2 "space-padded"
+        varchar ADDRESS_3 "space-padded"
+        varchar COUNTY "space-padded"
+        varchar POSTCODE "space-padded"
+        varchar EXTRA_PADDING "trailing comma"
+    }
+
+    STG_ADDR {
+        varchar PERIOD "trimmed"
+        varchar PRACTICE_CODE "trimmed"
+        varchar PRACTICE_NAME "trimmed"
+        varchar ADDRESS_1 "trimmed"
+        varchar ADDRESS_2 "trimmed"
+        varchar ADDRESS_3 "trimmed"
+        varchar COUNTY "trimmed"
+        varchar POSTCODE "trimmed"
+    }
+
+    STG_PROCESSED_ADDR {
+        varchar PERIOD
+        varchar PRACTICE_CODE
+        varchar PRACTICE_NAME
+        varchar ADDRESS "ADDRESS_1 + 2 + 3 merged"
+        varchar COUNTY
+        varchar POSTCODE
+    }
+
+    STG_RAW_ADDR ||--|| STG_ADDR : "trim"
+    STG_ADDR ||--|| STG_PROCESSED_ADDR : "merge address"
+```
+
 ### Loading CHEM into Exasol
 
 CRLF line endings, has header (SKIP = 1), 3 columns (CHEM_SUB, NAME, PERIOD):
@@ -625,6 +659,25 @@ Verify:
 
 ```sql
 SELECT * FROM STG_CHEM_201008 LIMIT 5;
+```
+
+Here's what we did — raw import and trim:
+
+```mermaid
+erDiagram
+    STG_RAW_CHEM {
+        varchar CHEM_SUB "space-padded"
+        varchar NAME "space-padded"
+        varchar PERIOD "from header row"
+    }
+
+    STG_CHEM {
+        varchar CHEM_SUB "trimmed"
+        varchar NAME "trimmed"
+        varchar PERIOD "hardcoded"
+    }
+
+    STG_RAW_CHEM ||--|| STG_CHEM : "trim"
 ```
 
 ### Loading PDPI into Exasol
@@ -748,9 +801,78 @@ Verify the clean data:
 SELECT * FROM STG_PDPI_201008 LIMIT 5;
 ```
 
+Here's what we did — raw import and trim:
+
+```mermaid
+erDiagram
+    STG_RAW_PDPI {
+        varchar SHA "space-padded"
+        varchar PCT "space-padded"
+        varchar PRACTICE "space-padded"
+        varchar BNF_CODE "space-padded"
+        varchar BNF_NAME "space-padded"
+        decimal ITEMS "zero-padded"
+        decimal NIC "zero-padded"
+        decimal ACT_COST "zero-padded"
+        decimal QUANTITY "zero-padded"
+        varchar PERIOD "space-padded"
+        varchar EXTRA_PADDING "trailing comma"
+    }
+
+    STG_PDPI {
+        varchar SHA "trimmed"
+        varchar PCT "trimmed"
+        varchar PRACTICE "trimmed"
+        varchar BNF_CODE "trimmed"
+        varchar BNF_NAME "trimmed"
+        decimal ITEMS
+        decimal NIC
+        decimal ACT_COST
+        decimal QUANTITY
+        varchar PERIOD "hardcoded"
+    }
+
+    STG_RAW_PDPI ||--|| STG_PDPI : "trim"
+```
+
 ## Manual data warehouse load
 
 Now that we have clean staging tables, let's create the final data warehouse tables that analysts will actually query. We put them in a separate schema `PRESCRIPTIONS_UK` so analysts get a clean namespace with only the tables they need, without the staging clutter.
+
+The warehouse has three tables in a star schema:
+
+```mermaid
+erDiagram
+    PRESCRIPTION ||--o{ PRACTICE : "PRACTICE_CODE"
+    PRESCRIPTION ||--o{ CHEMICAL : "CHEMICAL_CODE"
+
+    PRESCRIPTION {
+        varchar PRACTICE_CODE
+        varchar BNF_CODE
+        varchar CHEMICAL_CODE "= SUBSTR(BNF_CODE, 1, 9)"
+        varchar DRUG_NAME "was BNF_NAME"
+        decimal ITEMS
+        decimal NET_COST "was NIC"
+        decimal ACTUAL_COST "was ACT_COST"
+        decimal QUANTITY
+        varchar PERIOD
+    }
+
+    PRACTICE {
+        varchar PRACTICE_CODE
+        varchar PRACTICE_NAME
+        varchar ADDRESS "= ADDRESS_1 + 2 + 3"
+        varchar COUNTY
+        varchar POSTCODE
+        varchar PERIOD
+    }
+
+    CHEMICAL {
+        varchar CHEMICAL_CODE "was CHEM_SUB"
+        varchar CHEMICAL_NAME "was NAME"
+        varchar PERIOD
+    }
+```
 
 We want the load to be idempotent - safe to re-run at any time without duplicating data. When we later automate this with a workflow orchestrator, any step should be safely retryable.
 
@@ -946,7 +1068,7 @@ Once we load all 101 months, we can analyze how the data actually changes over t
 
 We loaded one month manually to understand the process. Now let's automate it - first with Python scripts, then with Kestra as a workflow orchestrator.
 
-We already set up the project directory and scraped the available URLs earlier. Make sure you're in the `code/` directory and that `PREFIX` is still set:
+We already set up the project directory and scraped the available URLs earlier. Open a new terminal, go to the `code` directory, and set the PREFIX:
 
 ```bash
 cd code
@@ -1068,13 +1190,33 @@ We have Python scripts that load one month at a time, but there are 101 months t
 
 ### Start Kestra
 
-The [docker-compose file](reference/kestra/docker-compose.yml) mounts the project root into the Kestra container at `/workspace`, so both `code/` and `deployment/` are available. Download it:
+The [docker-compose file](reference/kestra/docker-compose.yml) mounts the project root into the Kestra container at `/workspace`, so both `code/` and `deployment/` are available. Open a new terminal, go to the `code` directory, and download it:
 
 ```bash
 cd code
-mkdir -p kestra
+mkdir -p kestra/flows
 PREFIX=https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference
 wget ${PREFIX}/kestra/docker-compose.yml -O kestra/docker-compose.yml
+```
+
+Create the `flows/` directory before starting Kestra — otherwise `docker compose` creates it as root and you won't be able to write to it later.
+
+Create a file `kestra/flows/main_hello_hello_world.yml` with a hello world flow to test that everything works:
+
+```yaml
+id: hello_world
+namespace: hello
+
+tasks:
+  - id: say_hello
+    type: io.kestra.plugin.core.log.Log
+    message: "Hello from Kestra!"
+```
+
+If you get permission errors saying the files are owned by root, run:
+
+```bash
+sudo chown -R $(whoami) kestra/flows
 ```
 
 Now start Kestra:
@@ -1144,7 +1286,6 @@ We already loaded one month manually. Now let's create a proper flow for it. Eac
 Download the flow definitions into `kestra/flows/`. Kestra watches this directory and auto-imports any YAML files — the naming convention `main_<namespace>_<flow_id>.yml` tells Kestra which namespace and ID to use:
 
 ```bash
-mkdir -p kestra/flows
 wget ${PREFIX}/kestra/flows/main_prescriptions_load_addr.yml -O kestra/flows/main_prescriptions_load_addr.yml
 wget ${PREFIX}/kestra/flows/main_prescriptions_load_chem.yml -O kestra/flows/main_prescriptions_load_chem.yml
 wget ${PREFIX}/kestra/flows/main_prescriptions_load_pdpi.yml -O kestra/flows/main_prescriptions_load_pdpi.yml
@@ -1210,14 +1351,15 @@ Some months may fail due to unavailable source URLs (a few older months link to 
 
 While the data is loading, run a Streamlit dashboard to visualize the warehouse checks. As more months load, the dashboard auto-refreshes so you can monitor progress and start exploring the dataset.
 
-Download the dashboard script:
+Open a new terminal and go to the `code` directory. Download the dashboard script:
 
 ```bash
+cd code
 PREFIX=https://raw.githubusercontent.com/alexeygrigorev/exasol-workshop-starter/main/reference
 wget ${PREFIX}/dashboard.py
 ```
 
-Install dependencies and start the app from the `code` folder:
+Install dependencies:
 
 ```bash
 uv add pandas streamlit streamlit-autorefresh altair
@@ -1276,5 +1418,5 @@ This terminates the EC2 instance and cleans up all AWS resources.
 - Codespace created before setting the secret? Rebuild it: `Cmd/Ctrl+Shift+P` -> "Rebuild Container"
 - "Wrong passphrase"? Double-check with your instructor
 - Permission errors on AWS? Ask your instructor -- the role may need updated permissions
-- `exasol install` fails? Make sure `aws sts get-caller-identity` works first
+- `exasol install aws` fails? Make sure `aws sts get-caller-identity` works first
 - Lock file error? Remove `~/deployment/.exasolLock.json` and retry

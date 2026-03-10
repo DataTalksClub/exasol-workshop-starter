@@ -47,6 +47,37 @@ Verify:
 aws sts get-caller-identity
 ```
 
+## Required AWS Permissions
+
+We tested this workshop with the following IAM policy. The permissions are broad; you may be able to make them more restrictive for your setup.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": "ec2:*", "Resource": "*" },
+    { "Effect": "Allow", "Action": "s3:*", "Resource": "*" },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole", "iam:PassRole", "iam:DeleteRole",
+        "iam:GetRole", "iam:GetRolePolicy", "iam:TagRole",
+        "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
+        "iam:PutRolePolicy", "iam:DeleteRolePolicy",
+        "iam:CreateInstanceProfile", "iam:TagInstanceProfile",
+        "iam:AddRoleToInstanceProfile", "iam:DeleteInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile", "iam:GetInstanceProfile",
+        "iam:ListInstanceProfiles", "iam:ListInstanceProfilesForRole",
+        "iam:ListRoles"
+      ],
+      "Resource": "*"
+    },
+    { "Effect": "Allow", "Action": "ssm:*", "Resource": "*" },
+    { "Effect": "Allow", "Action": "logs:*", "Resource": "*" }
+  ]
+}
+```
+
 ## Follow the workshop
 
 Once the tools are installed and AWS is configured, follow [workshop.md](../workshop.md).
