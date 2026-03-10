@@ -19,18 +19,14 @@ def find_deployment_files(deployment_dir: Path | None = None) -> tuple[Path, Pat
     else:
         deployment_dir = Path(deployment_dir)
 
-    dep_files = list(deployment_dir.glob("deployment-exasol-*.json"))
-    if not dep_files:
-        raise FileNotFoundError(f"No deployment files found in {deployment_dir}")
-
-    dep_file = dep_files[0]
-    dep_id = dep_file.stem.replace("deployment-", "")
-    sec_file = deployment_dir / f"secrets-{dep_id}.json"
-
-    if not sec_file.exists():
-        raise FileNotFoundError(f"Secrets file not found: {sec_file}")
-
-    return dep_file, sec_file
+    dep_file = deployment_dir / "deployment.json"
+    sec_file = deployment_dir / "secrets.json"
+    if dep_file.exists() and sec_file.exists():
+        return dep_file, sec_file
+    raise FileNotFoundError(
+        f"Expected deployment files not found in {deployment_dir}: "
+        "deployment.json and secrets.json"
+    )
 
 
 def get_config(deployment_dir: Path | None = None) -> dict:
